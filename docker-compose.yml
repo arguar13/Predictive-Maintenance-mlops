@@ -1,0 +1,62 @@
+services:
+  # Base de datos relacional para metadatos de MLflow
+  db:
+    image: postgres:15-alpine
+    container_name: mlflow_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow_password
+      POSTGRES_DB: mlflow_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Servidor de Tracking de MLflow
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mlflow_server
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns   
+
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://mlflow:mlflow_password@db:5432/mlflow_db
+      --default-artifact-root /app/mlruns
+      --host 0.0.0.0
+      --port 5000
+
+  # API de Inferencia FastAPI
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hotel_mlops_api
+    restart: always
+    depends_on:
+      mlflow:
+        condition: service_started  # Asegura un mejor orden de arranque
+    ports:
+      - "8000:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - .:/app
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:

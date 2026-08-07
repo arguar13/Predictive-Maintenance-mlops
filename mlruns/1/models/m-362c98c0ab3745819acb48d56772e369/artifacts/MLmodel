@@ -1,0 +1,24 @@
+artifact_path: file:///C:/Users/arman/OneDrive/Documentos/Proyectos de programacion/Proyectos
+  sin haberse publicado/ML-DL-SQL-MongoDB ultimo/611 hotel-booking-mlops nivel MID/mlruns/1/models/m-362c98c0ab3745819acb48d56772e369/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.12.0
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.7.2
+    skops_trusted_types: null
+mlflow_version: 3.15.1
+model_id: m-362c98c0ab3745819acb48d56772e369
+model_size_bytes: 25848259
+model_uuid: m-362c98c0ab3745819acb48d56772e369
+prompts: null
+run_id: d42fd9e8656a40dfbd9c005717a850cc
+utc_time_created: '2026-08-06 14:36:44.216250'
