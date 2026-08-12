@@ -1,0 +1,35 @@
+# Entornos virtuales
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Tracking y Modelos Locales
+mlruns/
+
+# DVC y Datos
+# Ignoramos los datos crudos pero mantenemos los archivos .dvc para el seguimiento
+data/
+!*.dvc
+!/data/.keep
+.dvc/config.local
+
+# Variables de entorno y credenciales GCP
+.env
+*.json
+*.pem
+
+# Logs
+*.log
+
+# Testing
+.pytest_cache/
+
+# Entornos de desarrollo
+.vscode/
+.idea/
+.ipynb_checkpoints/
+/data
