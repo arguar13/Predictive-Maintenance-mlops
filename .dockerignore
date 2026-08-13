@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# Entornos virtuales de Python
+venv/
+env/
+.venv/
+
+# Caché compilada de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Directorios de Machine Learning y Tracking
+mlruns/
+
+# Datos crudos y DVC
+# Ignoramos la carpeta data porque DVC se encarga de descargarla
+data/
+.dvc/
+.dvcignore
+
+# Logs y testing
+*.log
+.pytest_cache/
+.coverage
+
+# IDEs y SO
+.vscode/
+.idea/
+.DS_Store

@@ -1,53 +1,45 @@
-import pandas as pd
-import mlflow.sklearn
 from fastapi import FastAPI, HTTPException
-from api.schemas import BookingFeatures
-import logging
+from pydantic import BaseModel
+import torch
+import mlflow.pytorch
+import joblib
+import numpy as np
+from src.config_loader import load_config
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+app = FastAPI(title="Predictive Maintenance API", version="2.0")
+config = load_config()
 
-app = FastAPI(
-    title="Hotel Market Segmentation API",
-    description="MLOps API for multiclass market segment classification",
-    version="1.0.0"
-)
+# Cargar modelo y scaler globalmente
+try:
+    model_uri = f"models:/{config['model']['model_name']}/latest"
+    model = mlflow.pytorch.load_model(model_uri)
+    model.eval()
+    scaler = joblib.load("models/scaler.joblib")
+except Exception as e:
+    model = None
+    scaler = None
 
-# Global model variable
-model = None
+class SensorData(BaseModel):
+    engine_id: str
+    readings: list[list[float]] # Matriz de 30x14
 
-@app.on_event("startup")
-def load_model():
-    """
-    Loads the latest production model from MLflow Model Registry upon server startup.
-    """
-    global model
-    try:
-        model_name = "HotelSegmentClassifier"
-        model_uri = f"models:/{model_name}/latest"
-        model = mlflow.sklearn.load_model(model_uri)
-        logger.info("Model loaded successfully into the API.")
-    except Exception as e:
-        logger.error(f"Failed to load model from MLflow: {e}")
+@app.get("/health")
+def health_check():
+    if model is None:
+        raise HTTPException(status_code=503, detail="Modelo no cargado.")
+    return {"status": "ok", "service": "online"}
 
 @app.post("/predict")
-def predict_segment(features: BookingFeatures):
-    """
-    Predicts the market segment based on booking features.
-    """
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model is currently unavailable.")
+def predict_manual(data: SensorData):
+    if np.array(data.readings).shape != (config['model']['window_size'], config['model']['num_features']):
+        raise HTTPException(status_code=400, detail="Formato de ventana incorrecto.")
     
-    try:
-        # Convert Pydantic model to DataFrame for the scikit-learn pipeline
-        input_data = pd.DataFrame([features.dict()])
+    scaled_data = scaler.transform(data.readings)
+    input_tensor = torch.tensor(np.array([scaled_data]), dtype=torch.float32)
+    
+    with torch.no_grad():
+        outputs = model(input_tensor)
+        prediction = torch.argmax(outputs, dim=1).item()
         
-        # Perform inference
-        prediction = model.predict(input_data)
-        
-        return {
-            "predicted_market_segment": str(prediction[0])
-        }
-    except Exception as e:
-        logger.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+    classes = ["Healthy", "Alert", "Critical"]
+    return {"engine_id": data.engine_id, "prediction": classes[prediction]}

@@ -1,126 +1,92 @@
-import pandas as pd
-import logging
-import optuna
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 import mlflow
-import mlflow.sklearn
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, accuracy_score
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-from imblearn.pipeline import Pipeline
-from imblearn.over_sampling import SMOTE
-from src.config_loader import load_config
+import mlflow.pytorch
+import joblib
+import os
+from src.data_processing import load_and_combine_data, build_multiclass_target, clean_and_prepare, create_sliding_windows
 
-logger = logging.getLogger(__name__)
+class FCNBaseline(nn.Module):
+    """Fully Convolutional Network Baseline para series de tiempo."""
+    def __init__(self, num_features, num_classes=3):
+        super(FCNBaseline, self).__init__()
+        self.conv_block = nn.Sequential(
+            nn.Conv1d(in_channels=num_features, out_channels=128, kernel_size=8, padding='same'),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=128, out_channels=256, kernel_size=5, padding='same'),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=256, out_channels=128, kernel_size=3, padding='same'),
+            nn.BatchNorm1d(128),
+            nn.ReLU()
+        )
+        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.classifier = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        # PyTorch espera formato (Batch, Channels, Length) -> Transponemos
+        x = x.transpose(1, 2)
+        x = self.conv_block(x)
+        x = self.global_avg_pool(x).squeeze(-1)
+        return self.classifier(x)
 
 def train_pipeline():
-    """
-    Trains the ML pipeline, performs hyperparameter tuning with Optuna,
-    and logs the best model using MLflow.
-    """
-    config = load_config()
+    mlflow.set_tracking_uri("http://127.0.0.1:5000")
+    mlflow.set_experiment("Predictive_Maintenance_FCN")
     
-    # MLflow setup
-    mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
-    mlflow.set_experiment(config["mlflow"]["experiment_name"])
+    # 1. Carga y preprocesamiento
+    df_raw = load_and_combine_data("data/")
+    df_target = build_multiclass_target(df_raw)
+    df_clean = clean_and_prepare(df_target)
     
-    # Load data
-    df = pd.read_csv(config["data"]["processed_data_path"])
-    X = df.drop(columns=[config["model"]["target_column"]])
-    y = df[config["model"]["target_column"]]
+    window_size = 30
+    X, y, scaler = create_sliding_windows(df_clean, window_size=window_size)
+    num_features = X.shape[2]
     
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=config["model"]["test_size"], 
-        random_state=config["model"]["random_state"], stratify=y
-    )
+    # 2. Tensores PyTorch
+    X_tensor = torch.tensor(X, dtype=torch.float32)
+    y_tensor = torch.tensor(y, dtype=torch.long)
+    dataset = TensorDataset(X_tensor, y_tensor)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
     
-    # Preprocessing definitions
-    numeric_features = X.select_dtypes(include=['int64', 'float64']).columns
-    categorical_features = X.select_dtypes(include=['object']).columns
+    model = FCNBaseline(num_features=num_features, num_classes=3)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     
-    # Numerical pipeline: Impute missing values with median, then scale
-    num_pipeline = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler())
-    ])
-    
-    # Categorical pipeline: Impute missing values with most frequent, then one-hot encode
-    cat_pipeline = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('encoder', OneHotEncoder(handle_unknown='ignore'))
-    ])
-    
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', num_pipeline, numeric_features),
-            ('cat', cat_pipeline, categorical_features)
-        ])
-    
-    def objective(trial):
-        n_estimators = trial.suggest_int('n_estimators', 50, 200)
-        max_depth = trial.suggest_int('max_depth', 5, 20)
+    # 3. Entrenamiento con Logging
+    with mlflow.start_run(run_name="FCN_Baseline_Training"):
+        mlflow.log_param("window_size", window_size)
         
-        model = RandomForestClassifier(
-            n_estimators=n_estimators, 
-            max_depth=max_depth, 
-            random_state=config["model"]["random_state"]
-        )
-        
-        pipeline = Pipeline(steps=[
-            ('preprocessor', preprocessor),
-            ('smote', SMOTE(random_state=config["model"]["random_state"])),
-            ('classifier', model)
-        ])
-        
-        pipeline.fit(X_train, y_train)
-        preds = pipeline.predict(X_test)
-        
-        return f1_score(y_test, preds, average='weighted')
+        epochs = 3
+        model.train()
+        for epoch in range(epochs):
+            total_loss = 0
+            for batch_X, batch_y in dataloader:
+                optimizer.zero_grad()
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                
+            avg_loss = total_loss / len(dataloader)
+            mlflow.log_metric("train_loss", avg_loss, step=epoch)
+            print(f"✨ Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
 
-    logger.info("Starting Optuna hyperparameter tuning...")
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=config["model"]["n_trials_optuna"])
-    
-    best_params = study.best_params
-    logger.info(f"Best parameters found: {best_params}")
-    
-    # Final Model Training with MLflow logging
-    with mlflow.start_run(run_name="Best_RandomForest_Model"):
-        mlflow.log_params(best_params)
-        
-        final_model = RandomForestClassifier(
-            n_estimators=best_params['n_estimators'],
-            max_depth=best_params['max_depth'],
-            random_state=config["model"]["random_state"]
+        example_input = X_tensor[:1]
+        signature = mlflow.models.infer_signature(example_input.numpy(), model(example_input).detach().numpy())
+        mlflow.pytorch.log_model(
+            model,
+            name="model",
+            registered_model_name="Turbofan_FCN",
+            input_example=example_input,
+            signature=signature
         )
-        
-        final_pipeline = Pipeline(steps=[
-            ('preprocessor', preprocessor),
-            ('smote', SMOTE(random_state=config["model"]["random_state"])),
-            ('classifier', final_model)
-        ])
-        
-        final_pipeline.fit(X_train, y_train)
-        y_pred = final_pipeline.predict(X_test)
-        
-        # Metrics
-        f1 = f1_score(y_test, y_pred, average='weighted')
-        acc = accuracy_score(y_test, y_pred)
-        
-        mlflow.log_metric("f1_score", f1)
-        mlflow.log_metric("accuracy", acc)
-        
-        # Log Model to Registry
-        mlflow.sklearn.log_model(
-            sk_model=final_pipeline,
-            artifact_path="model",
-            registered_model_name="HotelSegmentClassifier",
-            serialization_format="cloudpickle"
-        )
-
-        logger.info(f"Model trained and logged to MLflow successfully. F1: {f1:.4f}")
+        os.makedirs("models", exist_ok=True)
+        joblib.dump(scaler, "models/scaler.joblib")# Para uso en inferencia
 
 if __name__ == "__main__":
     train_pipeline()

@@ -1,69 +1,67 @@
-import os
 import pandas as pd
+import numpy as np
+import os
 import logging
-from typing import Tuple
-from src.config_loader import load_config
+from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
 
-def load_and_clean_data(filepath: str, min_class_count: int) -> pd.DataFrame:
-    """
-    Loads dataset, normalizes column names, handles basic data types, and prepares dates.
+def load_and_combine_data(data_dir: str) -> pd.DataFrame:
+    """Carga y une los datasets FD001 a FD004 de C-MAPSS garantizando identificadores únicos."""
+    index_names = ['unit_number', 'time_in_cycles']
+    setting_names = ['op_setting_1', 'op_setting_2', 'op_setting_3']
+    sensor_names = [f'sensor_{i}' for i in range(1, 22)]
+    col_names = index_names + setting_names + sensor_names
     
-    Args:
-        filepath (str): Path to the raw dataset.
-        min_class_count (int): Minimum occurrences for a target class to be kept.
-        
-    Returns:
-        pd.DataFrame: Cleaned dataframe.
-    """
-    try:
-        df = pd.read_csv(filepath)
-        
-        # Standardize column names
-        df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
-        
-        # Drop duplicates
-        initial_shape = df.shape
-        df = df.drop_duplicates()
-        if initial_shape[0] != df.shape[0]:
-            logger.info(f"Removed {initial_shape[0] - df.shape[0]} duplicate rows.")
+    datasets = ['FD001', 'FD002', 'FD003', 'FD004']
+    train_list = []
+    
+    for ds in datasets:
+        file_path = os.path.join(data_dir, f'train_{ds}.txt')
+        if os.path.exists(file_path):
+            df = pd.read_csv(file_path, sep=r'\s+', header=None, names=col_names)
+            df['dataset_id'] = ds
+            df['global_unit'] = df['dataset_id'] + '_' + df['unit_number'].astype(str)
+            train_list.append(df)
             
-        # Drop rows with missing target variable
-        df = df.dropna(subset=['market_segment'])
-        
-        # Filter rare target classes to avoid errors during stratified splitting
-        target_counts = df['market_segment'].value_counts()
-        valid_classes = target_counts[target_counts >= min_class_count].index
-        df = df[df['market_segment'].isin(valid_classes)]
-        
-        # Convert string months to integers
-        month_map = {
-            'January': 1, 'February': 2, 'March': 3, 'April': 4,
-            'May': 5, 'June': 6, 'July': 7, 'August': 8,
-            'September': 9, 'October': 10, 'November': 11, 'December': 12
-        }
-        
-        if 'arrival_date_month' in df.columns:
-            df['month'] = df['arrival_date_month'].map(month_map)
-            df = df.drop(columns=['arrival_date_month'])
-            
-        logger.info(f"Data loaded and cleaned successfully. Final shape: {df.shape}")
-        return df
-        
-    except FileNotFoundError as e:
-        logger.error(f"Dataset not found at {filepath}: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error during data cleaning: {e}")
-        raise
+    return pd.concat(train_list, ignore_index=True)
 
-if __name__ == "__main__":
-    config = load_config()
-    raw_path = config["data"]["raw_data_path"]
-    processed_path = config["data"]["processed_data_path"]
-    min_count = config["data"]["valid_classes_min_count"]
+def build_multiclass_target(df: pd.DataFrame) -> pd.DataFrame:
+    """Transforma el problema en clasificación multiclase (Healthy, Alert, Critical)."""
+    df = df.copy()
+    max_cycles = df.groupby('global_unit')['time_in_cycles'].transform('max')
+    df['RUL'] = max_cycles - df['time_in_cycles']
     
-    clean_df = load_and_clean_data(raw_path, min_count)
-    clean_df.to_csv(processed_path, index=False)
-    logger.info(f"Processed data saved to {processed_path}")
+    df['failure_type'] = 0 # Healthy
+    df.loc[df['RUL'] <= 60, 'failure_type'] = 1 # Alert
+    df.loc[df['RUL'] <= 30, 'failure_type'] = 2 # Critical
+    return df
+
+def clean_and_prepare(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina duplicados y sensores sin varianza (invariantes)."""
+    df = df.drop_duplicates()
+    sensor_cols = [col for col in df.columns if 'sensor' in col]
+    std_dev = df[sensor_cols].std()
+    invariant_sensors = std_dev[std_dev < 1e-6].index.tolist()
+    
+    df = df.drop(columns=invariant_sensors + ['RUL', 'dataset_id'])
+    return df
+
+def create_sliding_windows(df: pd.DataFrame, window_size: int = 30):
+    """Genera ventanas tridimensionales (Muestras, Ventana Temporal, Características) para PyTorch."""
+    features = [c for c in df.columns if c not in ['unit_number', 'time_in_cycles', 'global_unit', 'failure_type']]
+    
+    scaler = StandardScaler()
+    df[features] = scaler.fit_transform(df[features])
+    
+    X, y = [], []
+    for unit in df['global_unit'].unique():
+        unit_data = df[df['global_unit'] == unit].copy()
+        unit_data.reset_index(drop=True, inplace=True)
+        
+        for i in range(len(unit_data) - window_size + 1):
+            X.append(unit_data[features].iloc[i:i + window_size].values)
+            # Etiqueta del último ciclo de la ventana
+            y.append(unit_data['failure_type'].iloc[i + window_size - 1])
+            
+    return np.array(X), np.array(y), scaler

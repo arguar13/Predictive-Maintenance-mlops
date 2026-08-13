@@ -1,0 +1,12 @@
+services:
+  localstack:
+    image: localstack/localstack:3.8.0   # versión gratuita estable
+    container_name: localstack_proyecto2
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,iam
+      - AWS_DEFAULT_REGION=us-east-1
+      - EDGE_PORT=4566
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
