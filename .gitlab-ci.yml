@@ -13,16 +13,16 @@ variables:
 
 default:
   image: python:3.12-slim
-
-.aws_auth: &aws_auth
   id_tokens:
     AWS_OIDC_TOKEN:
       aud: https://gitlab.com
+
+.aws_auth: &aws_auth
   before_script:
     - apt-get update && apt-get install -y awscli jq
     - >
       export AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/web-identity-token &&
-      echo "$AWS_OIDC_TOKEN" > $AWS_WEB_IDENTITY_TOKEN_FILE &&
+      printf "%s" "$AWS_OIDC_TOKEN" > $AWS_WEB_IDENTITY_TOKEN_FILE &&
       aws sts assume-role-with-web-identity 
       --role-arn $AWS_ROLE_ARN 
       --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}" 
