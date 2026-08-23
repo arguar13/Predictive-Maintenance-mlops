@@ -6,20 +6,23 @@ stages:
 
 variables:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: predictive-maintenance-streaming
-  EKS_CLUSTER_NAME: mlops-streaming-cluster
-  # OIDC settings para AWS
-  AWS_ROLE_ARN: arn:aws:iam::TU_AWS_ACCOUNT_ID:role/GitLabCIStreamingRole
+  AWS_ACCOUNT_ID: "040175285118"
+  ECR_REPOSITORY: predictive-maintenance-mlops-streaming
+  EKS_CLUSTER_NAME: mlops-cluster
+  AWS_ROLE_ARN: arn:aws:iam::040175285118:role/GitLabCIRole
 
 default:
   image: python:3.12-slim
+  id_tokens:
+    AWS_OIDC_TOKEN:
+      aud: https://gitlab.com
 
 .aws_auth: &aws_auth
   before_script:
-    - apt-get update && apt-get install -y awscli
+    - apt-get update && apt-get install -y awscli jq
     - >
       export AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/web-identity-token &&
-      echo $CI_JOB_JWT_V2 > $AWS_WEB_IDENTITY_TOKEN_FILE &&
+      echo "$AWS_OIDC_TOKEN" > $AWS_WEB_IDENTITY_TOKEN_FILE &&
       aws sts assume-role-with-web-identity 
       --role-arn $AWS_ROLE_ARN 
       --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}" 
@@ -47,9 +50,8 @@ train_model:
     - poetry install
     - poetry run python src/train.py
   rules:
-    # Ejecutar en push a main o al recibir un trigger de reentrenamiento (Evidently)
     - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "trigger"' 
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
 
 build_image:
   stage: build
