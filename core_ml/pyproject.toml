@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "predictive-maintenance-data"
+version = "2.0.0"
+description = "Data Pipeline, Feature Store y Streaming MLOps"
+authors = ["Tu Nombre <tu@email.com>"]
+packages = [{include = "src"}, {include = "streaming"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+# Data Engineering & Feature Store
+pandas = ">=2.2.2" # Actualizado para ser compatible con Numpy 2.0+
+numpy = ">=2.0.0"
+pyarrow = ">=14.0.0"
+feast = {extras = ["aws", "redis"], version = ">=0.65.0"}
+pydantic = "^2.9.0" # Feast moderno requiere Pydantic v2
+dvc = {extras = ["s3"], version = "^3.0.0"} # DVC restaurado y compatible
+boto3 = ">=1.38.27"
+sqlalchemy = "^1.4.54"
+
+# Machine Learning & Streaming
+scikit-learn = ">=1.4.0"
+kafka-python-ng = "^2.2.2"
+evidently = ">=0.4.30"
+prometheus-client = ">=0.20.0,<0.25.0"
+psycopg2-binary = "2.9.9"
+requests = "^2.31.0"
+matplotlib = "^3.9.2"
+seaborn = "^0.13.2"
+torch = "^2.13.0"
+mlflow = "^3.15.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+black = "^24.2.0"
+flake8 = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

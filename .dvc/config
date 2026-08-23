@@ -1,7 +1,0 @@
-[core]
-    remote = minio
-['remote "minio"']
-    url = s3://mlops-data-bucket
-    endpointurl = http://localhost:4566
-    access_key_id = test
-    secret_access_key = test

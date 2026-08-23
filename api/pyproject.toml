@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "predictive-maintenance-api"
+version = "2.0.0"
+description = "Microservicio de Serving e Inferencia MLOps"
+authors = ["Tu Nombre <tu@email.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+fastapi = "0.103.2"
+uvicorn = "0.23.2"
+mlflow = "^3.15.1"
+torch = "2.2.0"
+numpy = "<2.0.0"
+pydantic = "^2.9.0"
+joblib = "^1.4.2"
+pyyaml = "^6.0.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

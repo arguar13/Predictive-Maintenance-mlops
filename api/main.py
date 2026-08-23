@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from config_loader import load_config
 import torch
 import mlflow.pytorch
 import joblib
 import numpy as np
-from src.config_loader import load_config
 
 app = FastAPI(title="Predictive Maintenance API", version="2.0")
 config = load_config()

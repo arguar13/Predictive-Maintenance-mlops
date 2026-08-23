@@ -1,3 +1,4 @@
+import os
 import time
 import pandas as pd
 from prometheus_client import start_http_server, Gauge
@@ -8,28 +9,32 @@ from kafka import KafkaConsumer
 import json
 import logging
 import requests
+import sys
+from pathlib import Path
+
+# Añadir la raíz y core_ml al PATH para resolver importaciones
+sys.path.append(str(Path(__file__).resolve().parent.parent / "core_ml"))
 from src.config_loader import load_config
 
 # Cargar Configuración
 config = load_config()
 drift_threshold = config['monitoring']['drift_threshold']
-accuracy_threshold = config['monitoring']['accuracy_threshold'] # Umbral del 85%
+accuracy_threshold = config['monitoring']['accuracy_threshold']
 
-# Métricas de Prometheus
 DATA_DRIFT_SCORE = Gauge('evidently_data_drift_score', 'Porcentaje de features con Drift')
 DATA_DRIFT_DETECTED = Gauge('evidently_data_drift_detected', '1 si hay drift, 0 si no')
 CONCEPT_DRIFT_ACCURACY = Gauge('model_accuracy', 'Precisión actual del modelo')
 
-# Cargar dataset de referencia (datos limpios con los que se entrenó)
-# En producción, esto se descarga de DVC o S3
 reference_data = pd.read_csv("data/reference_data_clean.csv")
 
-# Función para disparar GitHub Actions
 def trigger_github_actions_retraining():
-    """Hace una petición HTTPS a GitHub Actions para iniciar el reentrenamiento"""
-    github_token = "TU_GITHUB_PAT" # Usar variables de entorno en producción
+    github_token = os.environ.get("GITHUB_TOKEN")
+    if not github_token:
+        logging.error("No se encontró GITHUB_TOKEN en variables de entorno.")
+        return
+
     repo_owner = "TU_USUARIO"
-    repo_name = "TU_REPOSITORIO"
+    repo_name = "predictive_maintenance_mlops"
     
     url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/dispatches"
     headers = {
@@ -46,14 +51,12 @@ def trigger_github_actions_retraining():
         logging.error(f"Error al disparar GitHub Actions: {e}")
 
 def detect_concept_drift(y_true, y_pred):
-    """Calcula la precisión y dispara el reentrenamiento si baja del umbral"""
     accuracy = accuracy_score(y_true, y_pred)
     CONCEPT_DRIFT_ACCURACY.set(accuracy)
-    
     logging.info(f"Accuracy Actual: {accuracy:.2f} | Umbral: {accuracy_threshold}")
     
     if accuracy < accuracy_threshold:
-        logging.warning("🚨 Concept Drift Detectado! La precisión cayó. Iniciando reentrenamiento.")
+        logging.warning("🚨 Concept Drift Detectado! Iniciando reentrenamiento.")
         trigger_github_actions_retraining()
 
 def detect_drift(current_batch: pd.DataFrame):
@@ -69,7 +72,6 @@ def detect_drift(current_batch: pd.DataFrame):
     
     logging.info(f"Drift Score: {drift_share:.2f} | Drift Detected: {drift_detected}")
 
-    # Condición para disparar la alerta
     if drift_detected:
         logging.warning("🚨 Drift detectado. Iniciando pipeline de reentrenamiento...")
         trigger_github_actions_retraining()
@@ -78,25 +80,17 @@ def run_monitoring_service():
     start_http_server(config['monitoring']['prometheus_port'])
     logging.info(f"Métricas en puerto {config['monitoring']['prometheus_port']}")
     
-    # Consumidor de telemetría (Data Drift)
     consumer_telemetry = KafkaConsumer(
         config['kafka']['telemetry_topic'],
         bootstrap_servers=[config['kafka']['broker']],
         value_deserializer=lambda x: json.loads(x.decode('utf-8'))
     )
     
-    # Consumidor de "Ground Truth" (Concept Drift)
-    # En la vida real, las etiquetas reales llegan con retraso en otro tópico
     consumer_ground_truth = KafkaConsumer(
         'ground_truth_topic',
         bootstrap_servers=[config['kafka']['broker']],
         value_deserializer=lambda x: json.loads(x.decode('utf-8'))
     )
-    
-    # Lógica simplificada: en hilos separados o un bucle asíncrono, 
-    # escucharía ambos tópicos. Cuando el tópico de ground_truth junte
-    # un batch de etiquetas reales comparadas con las predicciones, ejecuto:
-    # detect_concept_drift(y_true_batch, y_pred_batch)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

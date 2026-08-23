@@ -1,0 +1,13 @@
+project: predictive_maintenance
+
+registry:
+  path: s3://predictive-maintenance-mlops-artifacts-040175285118/registry.pb
+
+provider: aws
+
+offline_store:
+  type: file   # sin "path"
+
+online_store:
+  type: redis
+  connection_string: "localhost:6379"
