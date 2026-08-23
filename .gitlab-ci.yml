@@ -34,10 +34,11 @@ pull_data:
   <<: *aws_auth
   script:
     - pip install dvc dvc-s3
+    - cd core_ml
     - dvc pull
   artifacts:
     paths:
-      - data/
+      - core_ml/data/
 
 train_model:
   stage: train
