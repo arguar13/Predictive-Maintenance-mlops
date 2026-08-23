@@ -68,7 +68,8 @@ deploy_k8s:
   <<: *aws_auth
   script:
     - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
-    - sed -i "s|image: predictive-maintenance-streaming.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest|g" kubernetes/02-mlops.yaml
+    - >
+      sed -i "s|image: predictive-maintenance-streaming.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest|g" kubernetes/02-mlops.yaml
     - kubectl apply -f kubernetes/01-config.yaml
     - kubectl apply -f kubernetes/02-mlops.yaml
     - kubectl rollout restart deployment streaming-consumer -n mlops-env
