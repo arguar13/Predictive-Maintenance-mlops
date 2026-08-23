@@ -4,6 +4,11 @@ stages:
   - build
   - deploy
 
+# Definición global del token OIDC
+id_tokens:
+  AWS_OIDC_TOKEN:
+    aud: https://gitlab.com
+
 variables:
   AWS_REGION: us-east-1
   AWS_ACCOUNT_ID: "040175285118"
@@ -13,9 +18,6 @@ variables:
 
 default:
   image: python:3.12-slim
-  id_tokens:
-    AWS_OIDC_TOKEN:
-      aud: https://gitlab.com
 
 .aws_auth: &aws_auth
   before_script:
