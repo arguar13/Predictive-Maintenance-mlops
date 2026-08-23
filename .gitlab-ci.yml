@@ -1,3 +1,4 @@
+
 stages:
   - data_pull
   - train
@@ -43,14 +44,15 @@ pull_data:
 train_model:
   stage: train
   <<: *aws_auth
+  variables:
+    MLFLOW_TRACKING_URI: "sqlite:////tmp/mlflow.db"
   script:
     - pip install poetry
     - cd core_ml
     - poetry install
     - poetry run python src/train.py
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+    - when: always
 
 build_image:
   stage: build
