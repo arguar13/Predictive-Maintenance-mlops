@@ -14,7 +14,7 @@ spec:
       labels:
         app: mlflow
       annotations:
-        eks.amazonaws.com/role-arn: arn:aws:iam::TU_AWS_ACCOUNT_ID:role/S3ArtifactsAccessRole
+        eks.amazonaws.com/role-arn: arn:aws:iam::040175285118:role/S3ArtifactsAccessRole
     spec:
       serviceAccountName: mlops-sa
       containers:
@@ -64,12 +64,12 @@ spec:
       labels:
         app: streaming-consumer
       annotations:
-        eks.amazonaws.com/role-arn: arn:aws:iam::TU_AWS_ACCOUNT_ID:role/S3ArtifactsAccessRole
+        eks.amazonaws.com/role-arn: arn:aws:iam::040175285118:role/S3ArtifactsAccessRole
     spec:
       serviceAccountName: mlops-sa
       containers:
         - name: consumer
-          image: TU_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-streaming:latest
+          image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming:latest
           imagePullPolicy: Always
           command: ["python", "streaming/kafka_consumer.py"]
           envFrom:
@@ -91,7 +91,7 @@ metadata:
   name: predictive-maintenance-api
   namespace: mlops-env
 spec:
-  replicas: 2 # Alta disponibilidad
+  replicas: 2
   selector:
     matchLabels:
       app: api
@@ -100,12 +100,12 @@ spec:
       labels:
         app: api
       annotations:
-        eks.amazonaws.com/role-arn: arn:aws:iam::TU_AWS_ACCOUNT_ID:role/S3ArtifactsAccessRole
+        eks.amazonaws.com/role-arn: arn:aws:iam::040175285118:role/S3ArtifactsAccessRole
     spec:
       serviceAccountName: mlops-sa
       containers:
         - name: api
-          image: TU_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-streaming:latest
+          image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming:latest
           imagePullPolicy: Always
           command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
           ports:
@@ -120,7 +120,7 @@ metadata:
   name: predictive-maintenance-api
   namespace: mlops-env
 spec:
-  type: LoadBalancer # Hacia el exterior (AWS ELB)
+  type: LoadBalancer
   selector:
     app: api
   ports:
