@@ -76,8 +76,7 @@ deploy_k8s:
     - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
     - chmod +x kubectl && mv kubectl /usr/local/bin/
     - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
-    - >
-      sed -i "s|image: .*\.amazonaws\.com/predictive-maintenance-mlops-streaming:.*|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest|g" kubernetes/02-mlops.yaml
+    - sed -i "s|image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming:latest|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest|g" kubernetes/02-mlops.yaml
     - kubectl apply -f kubernetes/01-config.yaml
     - kubectl apply -f kubernetes/02-mlops.yaml
     - kubectl rollout restart deployment streaming-consumer -n mlops-env
