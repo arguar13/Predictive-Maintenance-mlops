@@ -74,7 +74,7 @@ smoke_test:
     - pip install "poetry==${POETRY_VERSION}"
     - cd core_ml
     - poetry install --with dev --no-interaction
-    - dvc pull data_toy
+    - poetry run dvc pull data_toy
     - poetry run python src/prepare_feast_data.py --data-dir data_toy
     - poetry run python src/train.py --data-dir data_toy --data-source parquet --no-enforce-quality-gate
   rules:
