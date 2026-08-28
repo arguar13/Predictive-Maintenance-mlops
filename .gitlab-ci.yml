@@ -133,6 +133,16 @@ train_model:
       fi
     - cd core_ml
     - poetry install
+    # Paso faltante hasta ahora: --data-source feast exige que (a) el
+    # parquet fuente exista en S3 en la ruta que feature_store/features.py
+    # declara (FileSource), y (b) el FeatureView este registrado en el
+    # registry de Feast (tambien en S3, feature_store.yaml: registry.path).
+    # Sin esto, get_historical_features fallaba con
+    # FeatureViewNotFoundException: la definicion de features.py nunca habia
+    # llegado a aplicarse contra un registry real.
+    - poetry run python src/prepare_feast_data.py --data-dir data
+    - aws s3 cp data/engine_features.parquet "s3://predictive-maintenance-mlops-artifacts-${AWS_ACCOUNT_ID}/feast/data/engine_features.parquet"
+    - poetry run feast -c feature_store apply
     - poetry run python src/train.py --data-dir data --data-source feast
 
 build_image:
