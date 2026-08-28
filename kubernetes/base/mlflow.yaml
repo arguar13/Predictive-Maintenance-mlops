@@ -64,8 +64,14 @@ spec:
             # header". Se declara explicitamente el nombre corto y el FQDN
             # del Service como permitidos (mismo problema que en
             # docker-compose.yml, ver su comentario).
+            #
+            # host.docker.internal(:*): el job train_model del runner
+            # self-hosted (fuera del cluster, en el hardware que ejecuta
+            # runner/docker-compose.yml) llega a este Service via
+            # `kubectl port-forward svc/mlflow 5000:5000` + ese nombre DNS
+            # especial de Docker Desktop hacia el host -- mismo 403 sin esto.
             - name: MLFLOW_SERVER_ALLOWED_HOSTS
-              value: "mlflow,mlflow:*,mlflow.mlops-env,mlflow.mlops-env:*,mlflow.mlops-env.svc.cluster.local,mlflow.mlops-env.svc.cluster.local:*"
+              value: "mlflow,mlflow:*,mlflow.mlops-env,mlflow.mlops-env:*,mlflow.mlops-env.svc.cluster.local,mlflow.mlops-env.svc.cluster.local:*,host.docker.internal,host.docker.internal:*"
           volumeMounts:
             - name: tmp
               mountPath: /tmp
