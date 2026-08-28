@@ -56,8 +56,6 @@ quality:
     - pip install "poetry==${POETRY_VERSION}" pre-commit
     - make install
     - make ci
-  rules:
-    - when: always
 
 smoke_test:
   # Fase 2: valida el pipeline End-to-End (contratos de datos, prepare_feast_data,
@@ -67,25 +65,40 @@ smoke_test:
   # efímero (SQLite local): es un smoke test del pipeline, no un
   # entrenamiento que deba promoverse al Model Registry compartido.
   stage: smoke_test
-  # needs (DAG explicito) en vez de confiar solo en el orden de "stages":
-  # sin needs, GitLab no bloquea "train_model"/"build_image"/"release" cuando
-  # un stage anterior falla -- se observo train_model:running en paralelo con
-  # smoke_test:failed en el mismo pipeline. needs fuerza que cada job
-  # dependa explicitamente del anterior y NO arranque si ese fallo (salvo
-  # allow_failure: true, que ningun job de este pipeline usa).
+  # needs (DAG explicito) en vez de confiar solo en el orden de "stages": sin
+  # needs, GitLab no bloquea "train_model"/"build_image"/"release" cuando un
+  # stage anterior falla. Ademas, cada job SOLIA declarar `rules: - when:
+  # always` (ya retirado de los 5 jobs de este archivo): esa combinacion es
+  # una trampa documentada de GitLab -- "when: always" hace que el job se
+  # ejecute igual aunque el job del que depende (needs) haya quedado
+  # "skipped" (no "failed"), porque el skip no se propaga como un fallo. Con
+  # ese `rules` de por medio, un job podia arrancar con needs: [X] incluso
+  # con X en "skipped", que es exactamente lo que se observo dos veces:
+  # train_model:running con smoke_test:failed (y pull_data de por medio en
+  # "skipped"). Sin `rules` (inclusion por defecto, identica a "when:
+  # always" para el proposito de este pipeline) needs bloquea correctamente
+  # toda la cadena quality -> smoke_test -> pull_data -> train_model ->
+  # build_image -> release ante cualquier fallo.
   needs: ["quality"]
   <<: *aws_auth
-  variables:
-    MLFLOW_TRACKING_URI: "sqlite:////tmp/mlflow_smoke_test.db"
   script:
     - pip install "poetry==${POETRY_VERSION}"
     - cd core_ml
     - poetry install --with dev --no-interaction
     - poetry run dvc pull data_toy
     - poetry run python src/prepare_feast_data.py --data-dir data_toy
+    # export en el script, NO `variables:` de job: las variables de CI/CD del
+    # proyecto (Settings > CI/CD > Variables, p.ej. la MLFLOW_TRACKING_URI que
+    # usa train_model para el MLflow real) tienen mayor precedencia que las
+    # `variables:` a nivel de job en este archivo, asi que un bloque
+    # `variables:` aqui NUNCA gana. Sin este export, smoke_test terminaba
+    # hablandole al MLflow real via la URI de train_model y fallaba con 403
+    # "Invalid Host header" (ese MLflow solo permite los hosts de
+    # kubernetes/base/mlflow.yaml). smoke_test es un test de humo: SIEMPRE
+    # debe usar un tracking store SQLite efimero, nunca el Model Registry
+    # real ni nada configurado externamente.
+    - export MLFLOW_TRACKING_URI="sqlite:////tmp/mlflow_smoke_test.db"
     - poetry run python src/train.py --data-dir data_toy --data-source parquet --no-enforce-quality-gate
-  rules:
-    - when: always
 
 pull_data:
   stage: data_pull
@@ -121,8 +134,6 @@ train_model:
     - cd core_ml
     - poetry install
     - poetry run python src/train.py --data-dir data --data-source feast
-  rules:
-    - when: always
 
 build_image:
   # Construye y publica las TRES imagenes (api + streaming-consumer +
@@ -141,8 +152,6 @@ build_image:
     - apk add --no-cache make
     - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
     - make docker-build docker-push AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
-  rules:
-    - when: always
 
 release:
   # GitOps, no despliegue imperativo: este job NO habla con el cluster (sin
@@ -166,5 +175,3 @@ release:
     - git config user.email "gitlab-ci@$(echo "$CI_PROJECT_PATH" | tr '/' '.')"
     - git config user.name "GitLab CI"
     - make gitops-release AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
-  rules:
-    - when: always
