@@ -60,13 +60,16 @@ from logging_config import configure_logging  # noqa: E402
 log = configure_logging("evidently-drift-monitor")
 
 DATA_DRIFT_SHARE = Gauge(
-    "evidently_data_drift_share", "Fraccion de features con drift detectado en el ultimo lote"
+    "evidently_data_drift_share",
+    "Fraccion de features con drift detectado en el ultimo lote",
 )
 DATA_DRIFT_DETECTED = Gauge(
-    "evidently_data_drift_detected", "1 si el ultimo lote supero el umbral de drift, 0 si no"
+    "evidently_data_drift_detected",
+    "1 si el ultimo lote supero el umbral de drift, 0 si no",
 )
 BATCHES_PROCESSED = Gauge(
-    "evidently_batches_processed_total", "Lotes de telemetria evaluados desde el arranque"
+    "evidently_batches_processed_total",
+    "Lotes de telemetria evaluados desde el arranque",
 )
 
 # Tamano del lote antes de correr un reporte de drift. No forma parte de
@@ -86,7 +89,9 @@ def _feature_columns(num_features: int) -> list[str]:
     return [f"feature_{i}" for i in range(num_features)]
 
 
-def _build_reference_data(window_size: int, num_features: int, num_rows: int = 200) -> pd.DataFrame:
+def _build_reference_data(
+    window_size: int, num_features: int, num_rows: int = 200
+) -> pd.DataFrame:
     """Linea base fija (semilla constante) con la misma forma que la
     telemetria simulada: `producer_sim.py` no lee de ningun dataset real
     (ver docstring del modulo), asi que la referencia se genera igual.
@@ -104,13 +109,17 @@ def _window_to_row(sensor_readings: list, num_features: int) -> np.ndarray | Non
     return matrix.mean(axis=0)
 
 
-def _run_drift_report(reference_data: pd.DataFrame, current_batch: pd.DataFrame) -> tuple[float, bool]:
+def _run_drift_report(
+    reference_data: pd.DataFrame, current_batch: pd.DataFrame
+) -> float:
     report = Report(metrics=[DataDriftPreset()])
     snapshot = report.run(current_data=current_batch, reference_data=reference_data)
     result = snapshot.dict()
 
     drift_count_metric = next(
-        m for m in result["metrics"] if m["metric_name"].startswith("DriftedColumnsCount")
+        m
+        for m in result["metrics"]
+        if m["metric_name"].startswith("DriftedColumnsCount")
     )
     drift_share = float(drift_count_metric["value"]["share"])
     return drift_share
@@ -206,10 +215,18 @@ def run_monitoring_service() -> None:
         DATA_DRIFT_DETECTED.set(1 if drift_detected else 0)
         BATCHES_PROCESSED.inc()
 
-        log.info("drift_batch_evaluated", drift_share=drift_share, drift_detected=drift_detected)
+        log.info(
+            "drift_batch_evaluated",
+            drift_share=drift_share,
+            drift_detected=drift_detected,
+        )
 
         if drift_detected:
-            log.warning("data_drift_detected", drift_share=drift_share, threshold=drift_threshold)
+            log.warning(
+                "data_drift_detected",
+                drift_share=drift_share,
+                threshold=drift_threshold,
+            )
             _trigger_gitlab_retraining()
 
 
