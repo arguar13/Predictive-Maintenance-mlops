@@ -6,7 +6,10 @@ FROM python:3.12-slim
 # duplicar un pyproject.toml propio para un unico script.
 ENV POETRY_VERSION=2.4.1 \
     POETRY_VIRTUALENVS_CREATE=false \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Default de Poetry (15s) corta descargas de ruedas ML grandes (dask,
+    # feast, pyarrow, mlflow) con ReadTimeoutError en redes lentas/domesticas.
+    POETRY_REQUESTS_TIMEOUT=600
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev curl && \

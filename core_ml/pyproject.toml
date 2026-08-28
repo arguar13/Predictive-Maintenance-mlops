@@ -27,7 +27,13 @@ psycopg2-binary = "2.9.9"
 requests = "^2.31.0"
 matplotlib = "^3.9.2"
 seaborn = "^0.13.2"
-torch = "^2.13.0"
+# Rueda CPU-only (ver [[tool.poetry.source]] "pytorch-cpu" mas abajo): nada en
+# este proyecto llama a CUDA (entrenamiento del toy dataset y del dataset
+# completo corren en CPU, ver README "sin GPU"). La rueda de PyPI por defecto
+# para Linux arrastra ~2GB de paquetes nvidia-* (cufft, cublas, cudnn,
+# nvshmem...) que no se usan nunca y que en redes lentas/CI hacen fallar el
+# build de Docker por timeout de lectura contra files.pythonhosted.org.
+torch = {version = "^2.13.0", source = "pytorch-cpu"}
 mlflow = "^3.15.1"
 dvc-s3 = "^3.3.0"
 
@@ -65,6 +71,11 @@ bandit = "^1.7.10"
 # Fase 3: contenedores efimeros para pruebas de integracion locales
 # (Postgres, Kafka, LocalStack) antes de tocar infraestructura real.
 testcontainers = {extras = ["postgres", "kafka", "localstack"], version = "4.15.0"}
+
+[[tool.poetry.source]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core"]

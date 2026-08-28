@@ -9,7 +9,7 @@ metadata:
   namespace: mlops-env
 data:
   # `terraform output msk_bootstrap_brokers` -> listener TLS de MSK (9094).
-  KAFKA_BROKER: "b-1.predictivemaintenancem.4912as.c9.kafka.us-east-1.amazonaws.com:9094,b-2.predictivemaintenancem.4912as.c9.kafka.us-east-1.amazonaws.com:9094"
+  KAFKA_BROKER: "b-1.predictivemaintenancem.9o7en5.c9.kafka.us-east-1.amazonaws.com:9094,b-2.predictivemaintenancem.9o7en5.c9.kafka.us-east-1.amazonaws.com:9094"
   # MSK esta provisionado con encryption_in_transit.client_broker = "TLS"
   # (terraform/msk.tf). Los clientes de kafka-python deben hablar SSL o la
   # conexion sencillamente expira. En local (docker-compose) esta variable no

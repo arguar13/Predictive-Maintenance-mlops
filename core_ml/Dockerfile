@@ -5,7 +5,10 @@ FROM python:3.12-slim
 # entorno que local y CI.
 ENV POETRY_VERSION=2.4.1 \
     POETRY_VIRTUALENVS_CREATE=false \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Default de Poetry (15s) corta descargas de ruedas ML grandes (dask,
+    # feast, pyarrow, mlflow, torch) con ReadTimeoutError en redes lentas.
+    POETRY_REQUESTS_TIMEOUT=600
 
 # --no-install-recommends (DS-0029): evita arrastrar paquetes sugeridos que
 # no se usan (mas peso de imagen y mas CVEs que triar en cada escaneo).
