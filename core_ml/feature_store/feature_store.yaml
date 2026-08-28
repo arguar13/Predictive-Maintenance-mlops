@@ -10,4 +10,8 @@ offline_store:
 
 online_store:
   type: redis
-  connection_string: "localhost:6379"
+  # ${REDIS_CONNECTION_STRING}: inyectada via kubernetes/base/configmap.yaml
+  # (terraform/elasticache.tf -> output redis_connection_string) en EKS, y
+  # "localhost:6379" (docker-compose.yml) en local -- Feast expande
+  # variables de entorno con esta sintaxis de forma nativa.
+  connection_string: "${REDIS_CONNECTION_STRING}"

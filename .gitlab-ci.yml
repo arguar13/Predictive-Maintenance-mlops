@@ -1,15 +1,21 @@
 stages:
+  - quality
+  - smoke_test
   - data_pull
   - train
   - build
-  - deploy
+  - release
 
 variables:
   AWS_REGION: us-east-1
   AWS_ACCOUNT_ID: "040175285118"
-  ECR_REPOSITORY: predictive-maintenance-mlops-streaming
-  EKS_CLUSTER_NAME: mlops-cluster
   AWS_ROLE_ARN: arn:aws:iam::040175285118:role/GitLabCIRole
+  # Version anclada de Poetry: debe coincidir con la usada para generar los
+  # poetry.lock (ver cabecera de api/poetry.lock y core_ml/poetry.lock) para
+  # garantizar que local, CI y Docker resuelvan exactamente el mismo entorno.
+  POETRY_VERSION: "2.4.1"
+  # Version anclada de Trivy para el escaneo de secretos/vulnerabilidades/IaC.
+  TRIVY_VERSION: "0.69.3"
 
 default:
   image: python:3.12-slim
@@ -26,13 +32,45 @@ default:
         apk add --no-cache aws-cli jq curl
       fi
     - >
-      aws sts assume-role-with-web-identity 
-      --role-arn $AWS_ROLE_ARN 
-      --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}" 
+      aws sts assume-role-with-web-identity
+      --role-arn $AWS_ROLE_ARN
+      --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
       --web-identity-token "$AWS_OIDC_TOKEN" > /tmp/assume-role.json
     - export AWS_ACCESS_KEY_ID=$(jq -r '.Credentials.AccessKeyId' /tmp/assume-role.json)
     - export AWS_SECRET_ACCESS_KEY=$(jq -r '.Credentials.SecretAccessKey' /tmp/assume-role.json)
     - export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken' /tmp/assume-role.json)
+
+quality:
+  stage: quality
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends make curl
+    - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+    - pip install "poetry==${POETRY_VERSION}" pre-commit
+    - make install
+    - make ci
+  rules:
+    - when: always
+
+smoke_test:
+  # Fase 2: valida el pipeline End-to-End (contratos de datos, prepare_feast_data,
+  # entrenamiento, registro en MLflow) contra el dataset toy (~1000 filas,
+  # versionado con DVC) ANTES de gastar computo real (Feast/S3 + dataset
+  # completo + GPU) en el stage "train". Usa un tracking URI de MLflow
+  # efímero (SQLite local): es un smoke test del pipeline, no un
+  # entrenamiento que deba promoverse al Model Registry compartido.
+  stage: smoke_test
+  <<: *aws_auth
+  variables:
+    MLFLOW_TRACKING_URI: "sqlite:////tmp/mlflow_smoke_test.db"
+  script:
+    - pip install "poetry==${POETRY_VERSION}"
+    - cd core_ml
+    - poetry install --with dev --no-interaction
+    - dvc pull data_toy
+    - poetry run python src/prepare_feast_data.py --data-dir data_toy
+    - poetry run python src/train.py --data-dir data_toy --data-source parquet --no-enforce-quality-gate
+  rules:
+    - when: always
 
 pull_data:
   stage: data_pull
@@ -48,37 +86,65 @@ pull_data:
 train_model:
   stage: train
   <<: *aws_auth
-  variables:
-    MLFLOW_TRACKING_URI: "sqlite:////tmp/mlflow.db"
+  # MLFLOW_TRACKING_URI se toma de una variable de CI/CD del proyecto
+  # (Settings > CI/CD > Variables) apuntando al MLflow compartido y
+  # persistente (el mismo que sirve la API, ver kubernetes/base/configmap.yaml:
+  # MLFLOW_TRACKING_URI). Es IMPRESCINDIBLE configurarla con un endpoint
+  # alcanzable desde el runner (p.ej. un Load Balancer interno/privado);
+  # si no está definida, se cae a un SQLite efímero SOLO para no romper el
+  # pipeline -- ese modo NO registra nada en el Model Registry real que
+  # sirve la API, así que ningún modelo entrenado así llega a producción.
   script:
-    - pip install poetry
+    - pip install "poetry==${POETRY_VERSION}"
+    - export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-sqlite:////tmp/mlflow.db}"
+    - >
+      if [ "$MLFLOW_TRACKING_URI" = "sqlite:////tmp/mlflow.db" ]; then
+        echo "ADVERTENCIA: MLFLOW_TRACKING_URI no configurado; usando un tracking store SQLite efímero. Este modelo NO quedará disponible para la API. Configura la variable de CI/CD MLFLOW_TRACKING_URI con el endpoint real de MLflow.";
+      fi
     - cd core_ml
     - poetry install
-    - poetry run python src/train.py
+    - poetry run python src/train.py --data-dir data --data-source feast
   rules:
     - when: always
 
 build_image:
+  # Construye y publica AMBAS imagenes (api + streaming-consumer -- antes
+  # solo existia la de la API y el Deployment del consumer apuntaba, por
+  # error, a esa misma imagen sin streaming/ ni sus dependencias). El tag
+  # es siempre $CI_COMMIT_SHA, nunca "latest": es la referencia inmutable
+  # que el stage "release" fija en el overlay de Kustomize.
   stage: build
   image: docker:24.0.5
   services:
     - docker:24.0.5-dind
   <<: *aws_auth
   script:
+    - apk add --no-cache make
     - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-    - docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$CI_COMMIT_SHA -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest .
-    - docker push -a $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+    - make docker-build docker-push AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
+  rules:
+    - when: always
 
-deploy_k8s:
-  stage: deploy
-  <<: *aws_auth
+release:
+  # GitOps, no despliegue imperativo: este job NO habla con el cluster (sin
+  # kubectl, sin `aws eks update-kubeconfig`, sin credenciales de EKS). Solo
+  # fija el tag de imagen en kubernetes/overlays/production de forma
+  # declarativa (`kustomize edit set image`, ver Makefile) y commitea el
+  # cambio a git. ArgoCD (gitops/argocd/application.yaml), que vigila esa
+  # ruta dentro del cluster, detecta el commit y sincroniza -- el pipeline
+  # de CI nunca vuelve a tocar el cluster directamente.
+  #
+  # Requiere que el runner pueda pushear a este repo: por defecto GitLab
+  # configura el remote "origin" con el CI_JOB_TOKEN del propio pipeline;
+  # si la rama esta protegida, habilita "Allowed to push" para el rol
+  # "Maintainer"/CI en Settings > Repository > Protected branches.
+  stage: release
+  image: alpine:3.20
   script:
-    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-    - chmod +x kubectl && mv kubectl /usr/local/bin/
-    - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
-    - >
-      sed -i "s|image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming:latest|image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest|g" kubernetes/02-mlops.yaml
-    - kubectl apply -f kubernetes/01-config.yaml
-    - kubectl apply -f kubernetes/02-mlops.yaml
-    - kubectl rollout restart deployment streaming-consumer -n mlops-env
-    - kubectl rollout restart deployment predictive-maintenance-api -n mlops-env
+    - apk add --no-cache make git curl bash
+    - curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.8.1/kustomize_v5.8.1_linux_amd64.tar.gz" | tar xz -C /usr/local/bin
+    - git config user.email "gitlab-ci@$(echo "$CI_PROJECT_PATH" | tr '/' '.')"
+    - git config user.name "GitLab CI"
+    - make gitops-release AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
+  rules:
+    - when: always

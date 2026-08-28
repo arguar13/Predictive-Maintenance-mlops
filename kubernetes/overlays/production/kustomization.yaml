@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+# El pipeline de CI (.gitlab-ci.yml, stage "release") actualiza SOLO este
+# bloque de forma declarativa con:
+#   kustomize edit set image <repo>/predictive-maintenance-mlops-streaming=<repo>/predictive-maintenance-mlops-streaming:$CI_COMMIT_SHA
+#   kustomize edit set image <repo>/predictive-maintenance-mlops-consumer=<repo>/predictive-maintenance-mlops-consumer:$CI_COMMIT_SHA
+# (ver `make gitops-set-image`) y commitea el resultado a git -- nunca un
+# `sed -i` sobre el YAML. ArgoCD sincroniza el cluster con lo que hay aqui.
+images:
+- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
+  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
+  newTag: latest
+- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
+  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
+  newTag: latest

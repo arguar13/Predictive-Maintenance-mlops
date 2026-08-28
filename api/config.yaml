@@ -3,14 +3,14 @@ project:
   version: "2.0.0"
 
 kafka:
-  broker: "${KAFKA_BROKER}" # Inyectado por K8s ConfigMap
+  broker: "${KAFKA_BROKER}"  # Inyectado por K8s ConfigMap
   telemetry_topic: "engine_telemetry"
   alert_topic: "engine_alerts"
 
 model:
   window_size: 30
   num_features: 14
-  mlflow_tracking_uri: "${MLFLOW_TRACKING_URI}" # Inyectado por K8s
+  mlflow_tracking_uri: "${MLFLOW_TRACKING_URI}"  # Inyectado por K8s
   model_name: "Turbofan_FCN"
 
 monitoring:

@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictive-maintenance-api
+  namespace: mlops-env
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      serviceAccountName: mlops-sa
+      # KSV-0118 / KSV-0104: sin un securityContext explicito, el pod hereda
+      # los defaults del runtime (root, seccomp desactivado). El UID 10001
+      # es el que crea el Dockerfile de la API (usuario "appuser").
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          # El tag lo fija el overlay (kustomize edit set image), nunca sed.
+          image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming:latest
+          imagePullPolicy: Always
+          command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          # KSV-0014 / KSV-0001 / KSV-0003: sistema de archivos raiz de solo
+          # lectura, sin escalada de privilegios y sin ninguna capability.
+          # Un atacante que consiga ejecucion dentro del contenedor no puede
+          # escribir un binario ni elevar privilegios.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: mlops-config
+          env:
+            # Con la raiz de solo lectura, MLflow necesita un HOME escribible
+            # para su cache y para descargar el scaler del run (ver
+            # _load_champion_model_and_scaler en api/main.py).
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            # No usa /health: el liveness NO debe fallar solo porque aun no
+            # se registro un modelo "champion" (eso es un problema de
+            # negocio, no de que el proceso este vivo) -- evita reinicios
+            # en bucle mientras se espera el primer entrenamiento.
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        # Unico punto escribible del contenedor: efimero y por pod.
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: predictive-maintenance-api
+  namespace: mlops-env
+spec:
+  type: LoadBalancer
+  selector:
+    app: api
+  ports:
+    - port: 8000
+      targetPort: 8000

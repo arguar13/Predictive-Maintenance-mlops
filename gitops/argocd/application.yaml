@@ -1,0 +1,54 @@
+# Estado deseado de Kubernetes vive en git (GitOps): ArgoCD vigila
+# kubernetes/overlays/production en ESTE repo y reconcilia el cluster para
+# que coincida -- ni el pipeline de CI ni nadie corre `kubectl apply`/
+# `kubectl rollout restart` a mano contra el cluster nunca mas.
+#
+# Instalacion de ArgoCD (una sola vez por cluster):
+#   kubectl create namespace argocd
+#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.2/manifests/install.yaml
+#
+# Registrar esta aplicacion:
+#   kubectl apply -f gitops/argocd/application.yaml
+#
+# A partir de ahi, el UNICO cambio que hace el pipeline de CI es actualizar
+# el tag de imagen en kubernetes/overlays/production/kustomization.yaml y
+# commitearlo (`make gitops-set-image` + `make gitops-release`, ver
+# .gitlab-ci.yml stage "release") -- ArgoCD detecta el commit y sincroniza.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: predictive-maintenance-mlops
+  namespace: argocd
+  finalizers:
+    # Al borrar la Application, tambien borra los recursos que gestiona en
+    # el cluster (evita huerfanos si algun dia se retira el proyecto).
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://gitlab.com/personal-group7745334/proyecto611_verdadero.git
+    targetRevision: dev
+    path: kubernetes/overlays/production
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mlops-env
+
+  syncPolicy:
+    automated:
+      # prune: borra en el cluster lo que ya no esta en git.
+      # selfHeal: revierte cambios manuales (kubectl edit/patch) que
+      # diverjan del estado declarado -- ningun despliegue "a ciegas" ni
+      # deriva silenciosa.
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false  # namespace.yaml (Kustomize) ya lo declara
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

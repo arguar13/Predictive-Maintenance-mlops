@@ -25,8 +25,12 @@ data/
 # Logs
 *.log
 
-# Testing
+# Testing y calidad de codigo
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Entornos de desarrollo
 .vscode/
@@ -34,9 +38,16 @@ data/
 .ipynb_checkpoints/
 /data
 
-# Terraform generates providers, modules and local state.
-terraform/.terraform/
-terraform/*.tfstate
-terraform/*.tfstate.*
-terraform/*.tfvars
-terraform/*.tfvars.json
+# Terraform generates providers, modules and local state (incluye
+# terraform/bootstrap/, que se aplica por separado con su propio estado).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+# Los planes guardados (terraform plan -out) son artefactos transitorios:
+# llevan embebida una copia del config y de los valores sensibles resueltos.
+*.tfplan
+
+# gitlab-ci-local (Fase 4: validacion local del pipeline de CI)
+.gitlab-ci-local/

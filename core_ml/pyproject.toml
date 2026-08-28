@@ -13,6 +13,7 @@ numpy = ">=2.0.0"
 pyarrow = ">=14.0.0"
 feast = {extras = ["aws", "redis"], version = ">=0.65.0"}
 pydantic = "^2.9.0" # Feast moderno requiere Pydantic v2
+pandera = {extras = ["pandas"], version = ">=0.24.0,<1.0.0"} # Data contracts (Fase 2)
 dvc = {extras = ["s3"], version = "^3.0.0"} # DVC restaurado y compatible
 boto3 = ">=1.38.27"
 sqlalchemy = "^1.4.54"
@@ -30,11 +31,89 @@ torch = "^2.13.0"
 mlflow = "^3.15.1"
 dvc-s3 = "^3.3.0"
 
+# Observabilidad y resiliencia (Fase 4)
+structlog = "^26.1.0" # logging JSON estructurado (CloudWatch/Elasticsearch)
+# Cota superior <9 impuesta por feast (feast[aws,redis] requiere tenacity >=7,<9);
+# la API usada por streaming/kafka_consumer.py (retry, stop_after_attempt,
+# wait_exponential, retry_if_exception_type) es identica en 8.x.
+tenacity = ">=8.2.3,<9.0.0" # reintentos con backoff exponencial (limites, no loops infinitos)
+pybreaker = "^1.4.1" # circuit breaker para dependencias externas (Feast/MLflow/Kafka)
+
+# ---------------------------------------------------------------------------
+# Elevaciones de dependencias TRANSITIVAS por CVE
+#
+# Ninguna de estas se importa directamente: llegan a traves de mlflow. Se
+# declaran aqui como dependencias directas porque es la unica forma en Poetry
+# de imponer un suelo de version a una transitiva. Sin ellas, el resolutor
+# elige la version mas baja que satisface a mlflow, que resulta ser una con
+# CVEs HIGH sin parchear -- y `make security` rompe la build (con razon).
+#
+# cryptography NO se puede elevar aqui: mlflow 3.15.x lo acota a <50, asi
+# que CVE-2026-69247 esta bloqueada aguas arriba. Queda documentada como
+# excepcion con fecha de revision en .trivyignore.yaml.
+# ---------------------------------------------------------------------------
+
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.0.0"
-black = "^24.2.0"
-flake8 = "^7.0.0"
+ruff = "^0.16.4"
+black = "^24.10.0"
+isort = "^5.13.2"
+mypy = "^1.13.0"
+types-pyyaml = "^6.0.12"
+pytest = "^8.3.3"
+pytest-cov = "^5.0.0"
+bandit = "^1.7.10"
+# Fase 3: contenedores efimeros para pruebas de integracion locales
+# (Postgres, Kafka, LocalStack) antes de tocar infraestructura real.
+testcontainers = {extras = ["postgres", "kafka", "localstack"], version = "4.15.0"}
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+# ---------------------------------------------------------------------------
+# Shift-left tooling configuration (Fase 1: Calidad Local)
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv", "data", "data_toy", ".dvc"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "C4", "SIM"]
+ignore = []
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+extend-exclude = "/(data|data_toy)/"
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = ["src", "streaming", "feature_store"]
+explicit_package_bases = true
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+exclude = ["tests/", "data/", "data_toy/"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "data", "data_toy"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "streaming"]
+testpaths = ["tests"]
+# Por defecto (make test / pre-commit) se excluyen los tests de integracion:
+# levantan contenedores Docker reales (Testcontainers) y tardan segundos-minutos.
+# Ejecutarlos explicitamente con: make test-integration (pytest -m integration).
+addopts = "-ra -m \"not integration\""
+markers = [
+    "integration: requiere Docker; levanta contenedores efimeros reales (Testcontainers) — Fase 3",
+]

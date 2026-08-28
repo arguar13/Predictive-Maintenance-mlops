@@ -1,4 +1,17 @@
-version: '3.8'
+# Fase 3 (Local First): levanta TODOS los componentes -- Postgres, Kafka,
+# Redis, MLflow, la API y LocalStack ("la nube falsa") -- como contenedores
+# efimeros en la maquina local, para validar que se entienden entre si antes
+# de tocar RDS/MSK/EKS/S3 reales en AWS.
+#
+# Uso:
+#   docker compose up -d          # levanta todo el stack
+#   make train-toy                # (fuera de compose) entrena y registra un
+#                                  # modelo "champion" contra este MLflow local
+#   docker compose restart api    # la API vuelve a cargar el modelo recien registrado
+#
+# La API arranca sin modelo (healthcheck en rojo) hasta que exista un modelo
+# con el alias "champion" en el Model Registry de este MLflow local -- es
+# el comportamiento esperado, no un fallo del stack.
 
 services:
   postgres:
@@ -21,16 +34,30 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+    healthcheck:
+      # El comando de 4 letras "ruok" esta deshabilitado por defecto en esta
+      # imagen (no esta en el whitelist); comprobar que el puerto acepta
+      # conexiones es suficiente para el healthcheck local.
+      test: ["CMD-SHELL", "nc -z -w 2 localhost 2181"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -40,16 +67,22 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
 
   mlflow:
     build:
       context: .
       dockerfile: Dockerfile.mlflow
     command: >
-      mlflow server 
-      --host 0.0.0.0 
-      --backend-store-uri postgresql://mlflow_user:mlflow_password@postgres:5432/mlflow_db 
-      --serve-artifacts 
+      mlflow server
+      --host 0.0.0.0
+      --backend-store-uri postgresql://mlflow_user:mlflow_password@postgres:5432/mlflow_db
+      --serve-artifacts
       --artifacts-destination /mlruns
     ports:
       - "5000:5000"
@@ -58,6 +91,58 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # LocalStack: "la nube falsa". Simula S3 (Feast offline store, remoto de
+  # DVC), SQS y Secrets Manager localmente, sin credenciales ni costes reales
+  # de AWS. Ver localstack/init-aws.sh para los recursos que se bootstrapean
+  # automaticamente (mismo nombre de bucket que en terraform/s3.tf).
+  localstack:
+    image: localstack/localstack:3.8
+    environment:
+      SERVICES: s3,sqs,secretsmanager
+      DEFAULT_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      PERSISTENCE: 0
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # API de serving (FastAPI). Carga el modelo "champion" desde el MLflow de
+  # este stack -- ver la nota de arranque al inicio de este archivo.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "8000:8000"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   pgdata:
+  localstack_data:

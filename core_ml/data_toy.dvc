@@ -1,0 +1,6 @@
+outs:
+- md5: 16a3c37e4869f45166565db44dbad644.dir
+  size: 673825
+  nfiles: 4
+  hash: md5
+  path: data_toy

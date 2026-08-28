@@ -3,18 +3,119 @@ name = "predictive-maintenance-api"
 version = "2.0.0"
 description = "Microservicio de Serving e Inferencia MLOps"
 authors = ["Tu Nombre <tu@email.com>"]
+# La API es una APLICACION (se sirve con uvicorn), no una libreria: no tiene
+# un paquete importable llamado "predictive_maintenance_api" ni se publica
+# como wheel. Sin esto, `poetry install` intenta instalar el proyecto raiz y
+# falla con "No file/folder found for package predictive-maintenance-api"
+# -- tanto en `make install` como en el `poetry install` del Dockerfile.
+# Poetry se usa aqui SOLO como gestor de dependencias deterministas.
+package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13"
-fastapi = "0.103.2"
-uvicorn = "0.23.2"
+# fastapi/uvicorn: se sube del pin exacto 0.103.2 / 0.23.2. Ese fastapi
+# arrastraba starlette 0.27.0, con 4 CVEs HIGH sin parchear
+# (CVE-2024-47874 DoS por multipart, CVE-2026-48818, CVE-2026-54283...).
+fastapi = "^0.121.0"
+uvicorn = "^0.41.0"
 mlflow = "^3.15.1"
-torch = "2.2.0"
-numpy = "<2.0.0"
+# torch: DEBE ir alineado con core_ml/pyproject.toml. El modelo se registra
+# en MLflow con serialization_format="pickle" (ver core_ml/src/train.py), y
+# un pickle de un nn.Module producido por torch 2.13 no tiene garantia de
+# cargar en el 2.2.0 que habia pineado aqui. Ademas 2.2.0 arrastra
+# CVE-2025-32434 (CRITICAL: RCE en torch.load), corregida en 2.6.0.
+torch = "^2.13.0"
+# numpy: antes "<2.0.0", incompatible con el ">=2.0.0" de core_ml. Dos
+# proyectos que intercambian arrays y un scaler de scikit-learn por pickle
+# no pueden estar en majors distintos de numpy.
+numpy = ">=2.0.0"
 pydantic = "^2.9.0"
 joblib = "^1.4.2"
 pyyaml = "^6.0.1"
+# El scaler registrado por core_ml/src/train.py es un sklearn StandardScaler
+# deserializado aquí vía joblib.load: sin esta dependencia, _load_champion_model_and_scaler
+# falla con ModuleNotFoundError en cuanto se descarga un scaler real desde MLflow.
+scikit-learn = ">=1.4.0"
+structlog = "^26.1.0" # logging JSON estructurado (Fase 4: CloudWatch/Elasticsearch)
+
+# ---------------------------------------------------------------------------
+# Elevaciones de dependencias TRANSITIVAS por CVE
+#
+# Ninguna de estas se importa directamente: llegan a traves de mlflow. Se
+# declaran aqui como dependencias directas porque es la unica forma en Poetry
+# de imponer un suelo de version a una transitiva. Sin ellas, el resolutor
+# elige la version mas baja que satisface a mlflow, que resulta ser una con
+# CVEs HIGH sin parchear -- y `make security` rompe la build (con razon).
+#
+# cryptography NO se puede elevar aqui: mlflow 3.15.x lo acota a <50, asi
+# que CVE-2026-69247 esta bloqueada aguas arriba. Queda documentada como
+# excepcion con fecha de revision en .trivyignore.yaml.
+# ---------------------------------------------------------------------------
+gunicorn = ">=22.0.0"       # CVE-2024-1135, CVE-2024-6827 (HTTP request smuggling)
+protobuf = ">=5.29.6"        # CVE-2026-0994
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.16.4"
+black = "^24.10.0"
+isort = "^5.13.2"
+mypy = "^1.13.0"
+types-pyyaml = "^6.0.12"
+pytest = "^8.3.3"
+pytest-cov = "^5.0.0"
+httpx = "^0.27.2"
+bandit = "^1.7.10"
+# Fase 3: contenedor Postgres efimero (Testcontainers) para probar que la
+# API sirve de verdad desde un MLflow Model Registry real, no un sqlite.
+testcontainers = {extras = ["postgres"], version = "4.15.0"}
+psycopg2-binary = "^2.9.9"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+# ---------------------------------------------------------------------------
+# Shift-left tooling configuration (Fase 1: Calidad Local)
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv", "models"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "C4", "SIM"]
+ignore = []
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "."
+explicit_package_bases = true
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+exclude = ["tests/"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+# Por defecto (make test / pre-commit) se excluyen los tests de integracion:
+# levantan contenedores Docker reales (Testcontainers) y tardan segundos-minutos.
+# Ejecutarlos explicitamente con: make test-integration (pytest -m integration).
+addopts = "-ra -m \"not integration\""
+markers = [
+    "integration: requiere Docker; levanta contenedores efimeros reales (Testcontainers) — Fase 3",
+]

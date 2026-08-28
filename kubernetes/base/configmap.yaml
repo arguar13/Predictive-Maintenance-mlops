@@ -1,0 +1,20 @@
+# Valores no sensibles. Los que dependen de recursos AWS provisionados por
+# Terraform (KAFKA_BROKER, DB_HOST, REDIS_CONNECTION_STRING) se completan
+# con `terraform output` tras el apply -- ver kubernetes/overlays/production
+# para el patch que los sobreescribe por entorno (nunca con sed).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlops-config
+  namespace: mlops-env
+data:
+  # `terraform output msk_bootstrap_brokers` -> listener TLS de MSK (9094).
+  KAFKA_BROKER: "REPLACE_WITH_terraform_output_msk_bootstrap_brokers"
+  # MSK esta provisionado con encryption_in_transit.client_broker = "TLS"
+  # (terraform/msk.tf). Los clientes de kafka-python deben hablar SSL o la
+  # conexion sencillamente expira. En local (docker-compose) esta variable no
+  # se define y core_ml/streaming/kafka_security.py cae a PLAINTEXT.
+  KAFKA_SECURITY_PROTOCOL: "SSL"
+  MLFLOW_TRACKING_URI: "http://mlflow:5000"
+  DB_HOST: "REPLACE_WITH_terraform_output_rds_endpoint"
+  REDIS_CONNECTION_STRING: "REPLACE_WITH_terraform_output_redis_connection_string"

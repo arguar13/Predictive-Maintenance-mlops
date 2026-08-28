@@ -1,6 +1,7 @@
 from datetime import timedelta
+
 from feast import Entity, FeatureView, Field, FileSource, ValueType
-from feast.types import Float32, Int32, Array
+from feast.types import Array, Float32, Int32
 
 # Offline Store Source (El batch de datos preprocesados periódicamente)
 sensor_window_source = FileSource(
@@ -21,10 +22,10 @@ engine = Entity(
 engine_window_fv = FeatureView(
     name="engine_sensor_window_features",
     entities=[engine],
-    ttl=timedelta(days=1), # Retención en el Online Store
+    ttl=timedelta(days=1),  # Retención en el Online Store
     schema=[
-        Field(name="windowed_features", dtype=Array(Float32)), # Array aplanado 30x14
-        Field(name="failure_type", dtype=Int32)
+        Field(name="windowed_features", dtype=Array(Float32)),  # Array aplanado 30x14
+        Field(name="failure_type", dtype=Int32),
     ],
     online=True,
     source=sensor_window_source,

@@ -1,0 +1,154 @@
+---
+# Validación shift-left: un commit se rechaza automáticamente si falla el
+# linting, el formateo, el type checking, las pruebas, o si se detecta un
+# secreto o un YAML inválido.
+#
+# Prerrequisitos (una sola vez por máquina):
+#   pip install pre-commit          # o: pipx install pre-commit
+#   make install                    # poetry install --with dev en api/ y core_ml/
+#   make precommit-install          # instala los hooks de git
+#
+# Los hooks de api/ y core_ml/ reutilizan el mismo entorno virtual de Poetry
+# que Docker/CI (poetry -C <paquete> run ...), así local y CI ejecutan
+# exactamente las mismas versiones ancladas en cada poetry.lock.
+default_language_version:
+  python: python3.12
+
+repos:
+  # ---------------------------------------------------------------------
+  # Higiene general de archivos
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        args: [--maxkb=5120]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: check-toml
+      - id: check-json
+      - id: check-yaml
+        args: [--allow-multi-document]
+
+  # ---------------------------------------------------------------------
+  # YAML: estilo y validación estricta (K8s, GitLab CI, docker-compose...)
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--strict, -c=.yamllint.yaml]
+
+  # ---------------------------------------------------------------------
+  # api/ — lint, formato, imports, tipos, seguridad y pruebas
+  # ---------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: api-ruff
+        name: "api · ruff (lint)"
+        entry: poetry -C api run ruff check --fix
+        language: system
+        files: ^api/.*\.py$
+        pass_filenames: false
+
+      - id: api-isort
+        name: "api · isort (orden de imports)"
+        entry: poetry -C api run isort .
+        language: system
+        files: ^api/.*\.py$
+        pass_filenames: false
+
+      - id: api-black
+        name: "api · black (formato)"
+        entry: poetry -C api run black .
+        language: system
+        files: ^api/.*\.py$
+        pass_filenames: false
+
+      - id: api-mypy
+        name: "api · mypy (type checking)"
+        entry: poetry -C api run mypy .
+        language: system
+        files: ^api/.*\.py$
+        pass_filenames: false
+
+      - id: api-bandit
+        name: "api · bandit (seguridad)"
+        entry: poetry -C api run bandit -q -r . -x ./tests
+        language: system
+        files: ^api/.*\.py$
+        pass_filenames: false
+
+      - id: api-pytest
+        name: "api · pytest"
+        entry: poetry -C api run pytest
+        language: system
+        files: ^api/.*\.py$
+        pass_filenames: false
+
+      # -------------------------------------------------------------
+      # core_ml/ — mismo pipeline de calidad
+      # -------------------------------------------------------------
+      - id: core-ml-ruff
+        name: "core_ml · ruff (lint)"
+        entry: poetry -C core_ml run ruff check --fix
+        language: system
+        files: ^core_ml/(src|streaming|feature_store|scripts|tests)/.*\.py$
+        pass_filenames: false
+
+      - id: core-ml-isort
+        name: "core_ml · isort (orden de imports)"
+        entry: poetry -C core_ml run isort .
+        language: system
+        files: ^core_ml/(src|streaming|feature_store|scripts|tests)/.*\.py$
+        pass_filenames: false
+
+      - id: core-ml-black
+        name: "core_ml · black (formato)"
+        entry: poetry -C core_ml run black .
+        language: system
+        files: ^core_ml/(src|streaming|feature_store|scripts|tests)/.*\.py$
+        pass_filenames: false
+
+      - id: core-ml-mypy
+        name: "core_ml · mypy (type checking)"
+        entry: poetry -C core_ml run mypy src streaming feature_store
+        language: system
+        files: ^core_ml/(src|streaming|feature_store)/.*\.py$
+        pass_filenames: false
+
+      - id: core-ml-bandit
+        name: "core_ml · bandit (seguridad)"
+        entry: poetry -C core_ml run bandit -q -r src streaming feature_store
+        language: system
+        files: ^core_ml/(src|streaming|feature_store)/.*\.py$
+        pass_filenames: false
+
+      - id: core-ml-pytest
+        name: "core_ml · pytest"
+        entry: poetry -C core_ml run pytest
+        language: system
+        files: ^core_ml/(src|streaming|feature_store|tests)/.*\.py$
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------
+  # Seguridad transversal: secretos, vulnerabilidades de dependencias
+  # e IaC mal configurado (Dockerfiles, Kubernetes, Terraform)
+  # ---------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: trivy-fs
+        name: "trivy · secretos + vulnerabilidades + IaC"
+        entry: >-
+          trivy fs --scanners vuln,secret,misconfig --exit-code 1 --quiet
+          --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore.yaml
+          --skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,.venv,api/.venv,core_ml/.venv
+          .
+        language: system
+        pass_filenames: false
+        always_run: true
