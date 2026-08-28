@@ -1,4 +1,4 @@
-"""Entrenamiento del FCN de mantenimiento predictivo con trazabilidad MLflow.
+"""Entrenamiento del ConvTransformer de mantenimiento predictivo con trazabilidad MLflow.
 
 Cada ejecución queda ligada, de forma inequívoca, a la tupla:
     Git Commit Hash + DVC Data Hash + Hyperparameters + MLflow Run ID +
@@ -23,6 +23,7 @@ si supera el Quality Gate (`monitoring.accuracy_threshold` en config.yaml).
 from __future__ import annotations
 
 import argparse
+import math
 import os
 
 # subprocess solo se usa con argv fijo (sin input externo) en _get_git_commit_sha
@@ -52,28 +53,83 @@ WINDOW_SIZE = 30
 NUM_CLASSES = 3
 
 
-class FCNBaseline(nn.Module):
-    def __init__(self, num_features: int, num_classes: int = NUM_CLASSES) -> None:
+class PositionalEncoding(nn.Module):
+    """Codificación posicional sinusoidal estándar (Vaswani et al.) para el
+    TransformerEncoder de ConvTransformer: sin ella, la atención es invariante
+    al orden temporal de la ventana, y el orden de los 30 timesteps es
+    justamente la señal que la convolución+transformer deben aprovechar.
+    """
+
+    pe: torch.Tensor
+
+    def __init__(self, d_model: int, max_len: int = 5000) -> None:
         super().__init__()
-        self.conv_block = nn.Sequential(
-            nn.Conv1d(in_channels=num_features, out_channels=128, kernel_size=8, padding="same"),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Conv1d(in_channels=128, out_channels=256, kernel_size=5, padding="same"),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Conv1d(in_channels=256, out_channels=128, kernel_size=3, padding="same"),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-        )
-        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.classifier = nn.Linear(128, num_classes)
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe.unsqueeze(0))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.transpose(1, 2)
-        x = self.conv_block(x)
-        x = self.global_avg_pool(x).squeeze(-1)
-        return self.classifier(x)
+        return x + self.pe[:, : x.size(1), :]
+
+
+class ConvTransformer(nn.Module):
+    """Hibrido CNN + self-attention: una Conv1d local extrae patrones de
+    sensores de corto plazo antes de pasarlos al TransformerEncoder, que
+    modela dependencias de largo plazo entre timesteps de la ventana.
+
+    Reemplaza al FCN puramente convolucional que este proyecto usaba antes:
+    en un benchmark propio (5 arquitecturas sobre este mismo tipo de tarea
+    C-MAPSS) fue la de mejor Macro F1/Accuracy, por delante de
+    InceptionTime, Vanilla Transformer, PatchTST y el FCN baseline. Se omiten
+    las ramas de features estaticas/categoricas del benchmark original
+    (embedding de "dataset_id", features numericas estaticas): el pipeline
+    de Feast de este proyecto solo produce `windowed_features`, sin esas
+    columnas adicionales.
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        num_classes: int = NUM_CLASSES,
+        d_model: int = 64,
+        nhead: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.3,
+    ) -> None:
+        super().__init__()
+        self.conv = nn.Conv1d(
+            in_channels=num_features, out_channels=d_model, kernel_size=3, padding=1
+        )
+        self.bn = nn.BatchNorm1d(d_model)
+        self.relu = nn.ReLU()
+        self.pos_encoder = PositionalEncoding(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=128,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [batch, window_size, num_features]
+        x = x.transpose(1, 2)  # [batch, num_features, window_size] para Conv1d
+        x = self.relu(self.bn(self.conv(x)))
+        x = x.transpose(1, 2)  # [batch, window_size, d_model] para el transformer (batch_first)
+        x = self.pos_encoder(x)
+        out = self.transformer(x)
+        pooled = out.mean(dim=1)  # Global average pooling sobre los timesteps
+        return self.classifier(pooled)
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +238,10 @@ def train_pipeline(
     val_split: float = 0.2,
     enforce_quality_gate: bool = True,
     seed: int = 42,
+    patience: int = 5,
 ) -> str:
-    # Reproducibilidad: sin esto, la inicializacion de pesos de FCNBaseline y
-    # el orden de batches del DataLoader (shuffle=True) son no-deterministas
+    # Reproducibilidad: sin esto, la inicializacion de pesos de ConvTransformer
+    # y el orden de batches del DataLoader (shuffle=True) son no-deterministas
     # -- el mismo commit + mismos datos + mismos hiperparametros podia pasar
     # el quality gate en una corrida del pipeline y fallar en la siguiente.
     # Misma semilla que train_test_split (random_state=42) mas abajo.
@@ -251,20 +308,21 @@ def train_pipeline(
         TensorDataset(X_train_tensor, y_train_tensor), batch_size=batch_size, shuffle=True
     )
 
-    model = FCNBaseline(num_features=num_features, num_classes=NUM_CLASSES)
+    model = ConvTransformer(num_features=num_features, num_classes=NUM_CLASSES)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     lineage_tags = _build_lineage_tags(data_dir, data_source)
     accuracy_threshold = config["monitoring"]["accuracy_threshold"]
 
-    with mlflow.start_run(run_name=f"FCN_Training_{data_source}") as run:
+    with mlflow.start_run(run_name=f"ConvTransformer_Training_{data_source}") as run:
         mlflow.set_tags(lineage_tags)
         mlflow.log_params(
             {
                 "window_size": WINDOW_SIZE,
                 "num_features": num_features,
                 "epochs": epochs,
+                "patience": patience,
                 "learning_rate": learning_rate,
                 "batch_size": batch_size,
                 "val_split": val_split,
@@ -283,8 +341,14 @@ def train_pipeline(
         # para dejar converger al modelo es una apuesta: puede terminar
         # exactamente en un pico malo. Es el equivalente a early stopping
         # sobre el mejor checkpoint, no una forma de forzar el quality gate.
+        # Early stopping (patience): "epochs" es un TECHO, no un objetivo --
+        # con ConvTransformer casi siempre converge mucho antes. Cortar en
+        # cuanto `patience` epochs seguidos no mejoran val_accuracy ahorra
+        # computo real sin arriesgar nada (el checkpoint restaurado sigue
+        # siendo siempre el de mejor val_accuracy, nunca el ultimo).
         best_val_accuracy = -1.0
         best_state_dict: dict[str, torch.Tensor] | None = None
+        epochs_without_improvement = 0
 
         for epoch in range(epochs):
             model.train()
@@ -318,6 +382,17 @@ def train_pipeline(
             if epoch_val_accuracy > best_val_accuracy:
                 best_val_accuracy = epoch_val_accuracy
                 best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= patience:
+                    log.info(
+                        "early_stopping",
+                        epoch=epoch + 1,
+                        patience=patience,
+                        best_val_accuracy=best_val_accuracy,
+                    )
+                    break
 
         # best_state_dict siempre queda seteado (epoch 0 ya actualiza el
         # maximo desde -1.0 si epochs >= 1); restaurarlo deja el modelo que
@@ -402,6 +477,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--data-source", choices=["feast", "parquet"], default="feast")
     parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=5,
+        help="Early stopping: corta el entrenamiento tras N epochs seguidos sin mejorar "
+        "val_accuracy (siempre se restaura el mejor checkpoint, nunca el ultimo).",
+    )
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--val-split", type=float, default=0.2)
@@ -421,6 +503,7 @@ if __name__ == "__main__":
         data_dir=args.data_dir,
         data_source=args.data_source,
         epochs=args.epochs,
+        patience=args.patience,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         val_split=args.val_split,
