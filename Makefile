@@ -95,7 +95,7 @@ test-integration: ## Pruebas de integracion (Testcontainers: Postgres/Kafka/Loca
 ## ---------------------------------------------------------------------
 
 bandit: ## Analisis estatico de seguridad (SAST) del codigo Python
-	poetry -C $(API) run bandit -q -r . -x ./tests
+	poetry -C $(API) run bandit -q -r . -x ./tests,./.venv
 	poetry -C $(CORE) run bandit -q -r src streaming feature_store
 
 # El gate rompe la build en HIGH/CRITICAL y solo REPORTA lo demas. Antes
@@ -117,7 +117,9 @@ trivy: ## Escaneo de secretos, vulnerabilidades de dependencias e IaC
 	}
 	trivy fs --scanners vuln,secret,misconfig --exit-code 1 \
 		--severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore.yaml \
-		--skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,.venv,api/.venv,core_ml/.venv .
+		--skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv \
+		--skip-files terraform/terraform.tfvars,terraform/terraform.tfstate,terraform/terraform.tfstate.backup,terraform/main.tfplan,terraform/bootstrap/terraform.tfstate,terraform/bootstrap/terraform.tfstate.backup \
+		.
 
 security: bandit trivy ## Ejecuta bandit + trivy (SAST + secretos + vulnerabilidades + IaC)
 

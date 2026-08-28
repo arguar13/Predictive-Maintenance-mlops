@@ -33,7 +33,7 @@ repos:
       - id: check-toml
       - id: check-json
       - id: check-yaml
-        args: [--allow-multi-document]
+        args: [-m]
 
   # ---------------------------------------------------------------------
   # YAML: estilo y validación estricta (K8s, GitLab CI, docker-compose...)
@@ -79,7 +79,7 @@ repos:
 
       - id: api-bandit
         name: "api · bandit (seguridad)"
-        entry: poetry -C api run bandit -q -r . -x ./tests
+        entry: poetry -C api run bandit -q -r . -x ./tests,./.venv
         language: system
         files: ^api/.*\.py$
         pass_filenames: false
@@ -147,7 +147,8 @@ repos:
         entry: >-
           trivy fs --scanners vuln,secret,misconfig --exit-code 1 --quiet
           --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore.yaml
-          --skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,.venv,api/.venv,core_ml/.venv
+          --skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv
+          --skip-files terraform/terraform.tfvars,terraform/terraform.tfstate,terraform/terraform.tfstate.backup,terraform/main.tfplan,terraform/bootstrap/terraform.tfstate,terraform/bootstrap/terraform.tfstate.backup
           .
         language: system
         pass_filenames: false

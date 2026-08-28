@@ -15,8 +15,12 @@ package-mode = false
 python = ">=3.12,<3.13"
 # fastapi/uvicorn: se sube del pin exacto 0.103.2 / 0.23.2. Ese fastapi
 # arrastraba starlette 0.27.0, con 4 CVEs HIGH sin parchear
-# (CVE-2024-47874 DoS por multipart, CVE-2026-48818, CVE-2026-54283...).
-fastapi = "^0.121.0"
+# (CVE-2024-47874 DoS por multipart). Luego, el ^0.121.0 que reemplazo a ese
+# pin tope starlette en <0.51.0 (caret de Poetry), version que a su vez
+# quedo con 2 CVEs HIGH nuevos (CVE-2026-48818 SSRF/NTLM via UNC paths en
+# StaticFiles, CVE-2026-54283 DoS por limites de request.form() ignorados).
+# Se sube a ^0.135.0 para arrastrar starlette >=1.3.1 (ambos corregidos).
+fastapi = "^0.135.0"
 uvicorn = "^0.41.0"
 mlflow = "^3.15.1"
 # torch: DEBE ir alineado con core_ml/pyproject.toml. El modelo se registra
