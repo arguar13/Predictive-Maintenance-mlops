@@ -10,6 +10,7 @@ ECR_REGISTRY ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 API_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-streaming
 CONSUMER_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-consumer
 MONITORING_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-monitoring
+MLFLOW_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-mlflow
 # Tag inmutable y trazable: por defecto el commit de git (igual que
 # CI_COMMIT_SHA en GitLab) -- nunca "latest" en un release real.
 IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
@@ -23,8 +24,8 @@ GITOPS_OVERLAY := kubernetes/overlays/production
 	build-toy-dataset prepare-toy prepare-data train train-toy smoke-test \
 	dvc-pull dvc-push dvc-use-localstack \
 	compose-up compose-down compose-destroy compose-logs compose-ps localstack-env \
-	docker-build-api docker-build-consumer docker-build-monitoring docker-build \
-	docker-push-api docker-push-consumer docker-push-monitoring docker-push \
+	docker-build-api docker-build-consumer docker-build-monitoring docker-build-mlflow docker-build \
+	docker-push-api docker-push-consumer docker-push-monitoring docker-push-mlflow docker-push \
 	k8s-build k8s-diff gitops-set-image gitops-release \
 	terraform-fmt terraform-validate terraform-plan \
 	ci-local \
@@ -212,7 +213,10 @@ docker-build-consumer: ## Construye la imagen del streaming consumer (core_ml/Do
 docker-build-monitoring: ## Construye la imagen del servicio de deteccion de drift (monitoring/Dockerfile)
 	docker build -t $(MONITORING_IMAGE):$(IMAGE_TAG) -f monitoring/Dockerfile .
 
-docker-build: docker-build-api docker-build-consumer docker-build-monitoring ## Construye las tres imagenes (api + consumer + monitoring)
+docker-build-mlflow: ## Construye la imagen de MLflow con psycopg2 (Dockerfile.mlflow; backend-store-uri es Postgres/RDS)
+	docker build -t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow .
+
+docker-build: docker-build-api docker-build-consumer docker-build-monitoring docker-build-mlflow ## Construye las cuatro imagenes (api + consumer + monitoring + mlflow)
 
 docker-push-api: ## Publica la imagen de la API en ECR (requiere `docker login` a ECR ya hecho)
 	docker push $(API_IMAGE):$(IMAGE_TAG)
@@ -223,7 +227,10 @@ docker-push-consumer: ## Publica la imagen del consumer en ECR
 docker-push-monitoring: ## Publica la imagen del servicio de monitoring en ECR
 	docker push $(MONITORING_IMAGE):$(IMAGE_TAG)
 
-docker-push: docker-push-api docker-push-consumer docker-push-monitoring ## Publica las tres imagenes en ECR
+docker-push-mlflow: ## Publica la imagen de MLflow en ECR
+	docker push $(MLFLOW_IMAGE):$(IMAGE_TAG)
+
+docker-push: docker-push-api docker-push-consumer docker-push-monitoring docker-push-mlflow ## Publica las cuatro imagenes en ECR
 
 k8s-build: ## Renderiza el overlay de produccion (kustomize build) para inspeccion/dry-run
 	kubectl kustomize $(GITOPS_OVERLAY)
@@ -235,7 +242,8 @@ gitops-set-image: ## Fija IMAGE_TAG en el overlay de forma declarativa (kustomiz
 	cd $(GITOPS_OVERLAY) && kustomize edit set image \
 		$(API_IMAGE)=$(API_IMAGE):$(IMAGE_TAG) \
 		$(CONSUMER_IMAGE)=$(CONSUMER_IMAGE):$(IMAGE_TAG) \
-		$(MONITORING_IMAGE)=$(MONITORING_IMAGE):$(IMAGE_TAG)
+		$(MONITORING_IMAGE)=$(MONITORING_IMAGE):$(IMAGE_TAG) \
+		$(MLFLOW_IMAGE)=$(MLFLOW_IMAGE):$(IMAGE_TAG)
 	@echo "OK: $(GITOPS_OVERLAY)/kustomization.yaml -> tag $(IMAGE_TAG)"
 
 gitops-release: gitops-set-image ## Commitea+pushea el nuevo tag: ArgoCD sincroniza el cluster (GitOps real)

@@ -27,7 +27,13 @@ spec:
           type: RuntimeDefault
       containers:
         - name: mlflow
-          image: ghcr.io/mlflow/mlflow:v3.15.1
+          # Imagen propia (Dockerfile.mlflow, publicada por el pipeline a ECR),
+          # NO la imagen publica ghcr.io/mlflow/mlflow: esta ultima no trae
+          # psycopg2, y backend-store-uri de abajo es Postgres/RDS -- el
+          # server crashea en el arranque con ModuleNotFoundError: psycopg2.
+          # kustomize edit set image (make gitops-set-image/release) fija el
+          # tag real; kubernetes/overlays/production declara el newName.
+          image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow:latest
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -141,6 +141,50 @@ resource "aws_ecr_lifecycle_policy" "monitoring_repo_cleanup" {
   })
 }
 
+# Imagen de MLflow (Dockerfile.mlflow): la imagen publica ghcr.io/mlflow/mlflow
+# no trae psycopg2 instalado -- el backend-store-uri de kubernetes/base/mlflow.yaml
+# es Postgres (RDS), asi que el server crashea con ModuleNotFoundError:
+# psycopg2 al arrancar. Dockerfile.mlflow parte de la misma imagen base y le
+# agrega psycopg2-binary (ya usado tal cual por el servicio "mlflow" de
+# docker-compose.yml); aqui se publica a ECR para reutilizarla en EKS.
+resource "aws_ecr_repository" "mlflow_repo" {
+  name                 = "${var.project_name}-mlflow"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.mlops.arn
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "mlflow_repo_cleanup" {
+  repository = aws_ecr_repository.mlflow_repo.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Mantener solo las ultimas 10 imagenes"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = {
+        type = "expire"
+      }
+    }]
+  })
+}
+
+output "ecr_mlflow_repository_url" {
+  value = aws_ecr_repository.mlflow_repo.repository_url
+}
+
 output "ecr_api_repository_url" {
   value = aws_ecr_repository.streaming_repo.repository_url
 }
