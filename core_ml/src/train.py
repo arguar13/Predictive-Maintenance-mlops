@@ -42,7 +42,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
 from config_loader import load_config
-from data_contracts import validate_windowed_features
+from data_contracts import validate_training_batch
 from logging_config import configure_logging
 
 log = configure_logging("train")
@@ -181,7 +181,14 @@ def train_pipeline(
     batch_size: int = 64,
     val_split: float = 0.2,
     enforce_quality_gate: bool = True,
+    seed: int = 42,
 ) -> str:
+    # Reproducibilidad: sin esto, la inicializacion de pesos de FCNBaseline y
+    # el orden de batches del DataLoader (shuffle=True) son no-deterministas
+    # -- el mismo commit + mismos datos + mismos hiperparametros podia pasar
+    # el quality gate en una corrida del pipeline y fallar en la siguiente.
+    # Misma semilla que train_test_split (random_state=42) mas abajo.
+    torch.manual_seed(seed)
     config = load_config()
     mlflow.set_tracking_uri(
         os.environ.get("MLFLOW_TRACKING_URI", config["model"]["mlflow_tracking_uri"])
@@ -203,9 +210,14 @@ def train_pipeline(
         raise ValueError(f"El dataset de entrenamiento en {data_path} está vacío.")
 
     # FAIL FAST: valida el contrato de las ventanas antes de construir tensores
-    # y de gastar cómputo de entrenamiento.
+    # y de gastar cómputo de entrenamiento. validate_training_batch (no
+    # validate_windowed_features): a diferencia del parquet que escribe
+    # prepare_feast_data.py, el batch ya cargado no trae "created_timestamp"
+    # cuando viene de Feast (metadata de ingestion, no una feature pedida en
+    # get_historical_features) y su "event_timestamp" es tz-aware (Feast
+    # normaliza a UTC en el join), no naive.
     sample_array_length = len(training_data["windowed_features"].iloc[0])
-    training_data = validate_windowed_features(training_data, expected_length=sample_array_length)
+    training_data = validate_training_batch(training_data, expected_length=sample_array_length)
 
     num_features = sample_array_length // WINDOW_SIZE
     log.info(
@@ -261,8 +273,21 @@ def train_pipeline(
             }
         )
 
-        model.train()
+        # Selecciona el mejor checkpoint por val_accuracy en vez de asumir que
+        # el ultimo epoch es el mejor: con el dataset completo (mucho mas
+        # solapamiento entre ventanas deslizantes que en el toy dataset) se
+        # observo val_accuracy colapsando por overfitting bien entrado el
+        # entrenamiento (epoch 20: train_loss bajando a 0.21 pero
+        # val_accuracy cayendo a 0.18, peor que adivinar al azar) mientras
+        # una epoch intermedia generalizaba mejor. Sin esto, subir "epochs"
+        # para dejar converger al modelo es una apuesta: puede terminar
+        # exactamente en un pico malo. Es el equivalente a early stopping
+        # sobre el mejor checkpoint, no una forma de forzar el quality gate.
+        best_val_accuracy = -1.0
+        best_state_dict: dict[str, torch.Tensor] | None = None
+
         for epoch in range(epochs):
+            model.train()
             total_loss = 0.0
             for batch_X, batch_y in train_loader:
                 optimizer.zero_grad()
@@ -274,16 +299,38 @@ def train_pipeline(
 
             avg_loss = total_loss / len(train_loader)
             mlflow.log_metric("train_loss", avg_loss, step=epoch)
-            log.info("epoch_completed", epoch=epoch + 1, total_epochs=epochs, train_loss=avg_loss)
 
-        # --- Evaluación (Quality Gate) ---
-        model.eval()
-        with torch.no_grad():
-            val_outputs = model(X_val_tensor)
-            val_predictions = torch.argmax(val_outputs, dim=1)
-            val_accuracy = (val_predictions == y_val_tensor).float().mean().item()
+            model.eval()
+            with torch.no_grad():
+                val_outputs = model(X_val_tensor)
+                val_predictions = torch.argmax(val_outputs, dim=1)
+                epoch_val_accuracy = (val_predictions == y_val_tensor).float().mean().item()
+            mlflow.log_metric("val_accuracy", epoch_val_accuracy, step=epoch)
 
-        mlflow.log_metric("val_accuracy", val_accuracy)
+            log.info(
+                "epoch_completed",
+                epoch=epoch + 1,
+                total_epochs=epochs,
+                train_loss=avg_loss,
+                val_accuracy=epoch_val_accuracy,
+            )
+
+            if epoch_val_accuracy > best_val_accuracy:
+                best_val_accuracy = epoch_val_accuracy
+                best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
+
+        # best_state_dict siempre queda seteado (epoch 0 ya actualiza el
+        # maximo desde -1.0 si epochs >= 1); restaurarlo deja el modelo que
+        # efectivamente se registra/evalua en el estado de su mejor epoch,
+        # no del ultimo. Un RuntimeError explicito (no assert: se elimina en
+        # bytecode optimizado) documenta que epochs=0 nunca es un uso valido.
+        if best_state_dict is None:
+            raise RuntimeError(
+                "epochs debe ser >= 1: no se completo ningún epoch de entrenamiento."
+            )
+        model.load_state_dict(best_state_dict)
+        val_accuracy = best_val_accuracy
+
         log.info(
             "validation_completed", val_accuracy=val_accuracy, accuracy_threshold=accuracy_threshold
         )

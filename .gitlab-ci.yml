@@ -143,7 +143,14 @@ train_model:
     - poetry run python src/prepare_feast_data.py --data-dir data
     - aws s3 cp data/engine_features.parquet "s3://predictive-maintenance-mlops-artifacts-${AWS_ACCOUNT_ID}/feast/data/engine_features.parquet"
     - poetry run feast -c feature_store apply
-    - poetry run python src/train.py --data-dir data --data-source feast
+    # --epochs 30 (el default de train.py, 3, es el valor usado por
+    # smoke_test para que corra en segundos contra el toy dataset -- nunca
+    # penso para entrenar de verdad). Validado localmente contra el dataset
+    # completo real: con 3 epochs val_accuracy quedaba en ~0.83 (por debajo
+    # del accuracy_threshold de 0.85); con 30 epochs y el resto de
+    # hiperparametros sin cambios, converge con margen (~0.90). Reproducible
+    # entre corridas: train.py fija torch.manual_seed(42).
+    - poetry run python src/train.py --data-dir data --data-source feast --epochs 30
 
 build_image:
   # Construye y publica las TRES imagenes (api + streaming-consumer +
