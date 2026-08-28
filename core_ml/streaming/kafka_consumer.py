@@ -157,13 +157,18 @@ def run_streaming_inference() -> None:
 
     consumer = KafkaConsumer(
         telemetry_topic,
-        bootstrap_servers=[kafka_broker],
+        # kafka_broker puede traer varios brokers separados por coma (MSK:
+        # ver terraform/msk.tf output msk_bootstrap_brokers). kafka-python
+        # SOLO los separa si recibe el string tal cual -- envuelto en una
+        # lista de un elemento (bootstrap_servers=[kafka_broker]) lo trata
+        # como un unico hostname invalido y la conexion nunca resuelve.
+        bootstrap_servers=kafka_broker,
         auto_offset_reset="latest",
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
         **transport,
     )
     producer = KafkaProducer(
-        bootstrap_servers=[kafka_broker],
+        bootstrap_servers=kafka_broker,  # ver nota sobre coma-separado arriba
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         **transport,
     )

@@ -169,7 +169,9 @@ def run_monitoring_service() -> None:
 
     consumer = KafkaConsumer(
         telemetry_topic,
-        bootstrap_servers=[kafka_broker],
+        # kafka_broker puede traer varios brokers separados por coma (MSK):
+        # ver la nota equivalente en core_ml/streaming/kafka_consumer.py.
+        bootstrap_servers=kafka_broker,
         auto_offset_reset="latest",
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )

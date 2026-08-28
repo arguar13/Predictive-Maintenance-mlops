@@ -88,7 +88,12 @@ resource "aws_db_instance" "mlflow_db" {
 }
 
 output "rds_endpoint" {
-  value = aws_db_instance.mlflow_db.endpoint
+  # .address (solo hostname), no .endpoint ("host:port"): el unico
+  # consumidor es kubernetes/base/configmap.yaml -> DB_HOST, y
+  # kubernetes/base/mlflow.yaml ya concatena ":5432" al construir el
+  # connection string. Con .endpoint el resultado habria sido
+  # "host:5432:5432", una URI invalida.
+  value = aws_db_instance.mlflow_db.address
 }
 
 output "db_credentials_secret_name" {

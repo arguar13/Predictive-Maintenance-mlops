@@ -42,7 +42,11 @@ def run_simulation() -> None:
     num_features = config["model"]["num_features"]
 
     producer = KafkaProducer(
-        bootstrap_servers=[broker],
+        # broker puede traer varios brokers separados por coma (MSK: ver
+        # terraform/msk.tf output msk_bootstrap_brokers). kafka-python SOLO
+        # los separa si recibe el string tal cual -- envuelto en una lista
+        # de un elemento se trata como un unico hostname invalido.
+        bootstrap_servers=broker,
         value_serializer=lambda value: json.dumps(value).encode("utf-8"),
         **kafka_client_kwargs(),
     )
