@@ -19,6 +19,12 @@ variables:
 
 default:
   image: python:3.12-slim
+  # Fuerza TODOS los jobs al runner self-hosted (hardware local, ver runner/)
+  # en vez de a los shared runners de gitlab.com: cero minutos de la cuota
+  # compartida consumidos. Requiere un runner registrado con este tag
+  # (make runner-register TOKEN=glrt-xxx && make runner-up).
+  tags:
+    - local-hardware
   id_tokens:
     AWS_OIDC_TOKEN:
       aud: sts.amazonaws.com
@@ -43,7 +49,9 @@ default:
 quality:
   stage: quality
   script:
-    - apt-get update && apt-get install -y --no-install-recommends make curl
+    # git es imprescindible: pre-commit (yamllint) lo invoca para enumerar
+    # archivos versionados, y python:3.12-slim no lo trae preinstalado.
+    - apt-get update && apt-get install -y --no-install-recommends make curl git
     - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
     - pip install "poetry==${POETRY_VERSION}" pre-commit
     - make install

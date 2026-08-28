@@ -28,6 +28,7 @@ GITOPS_OVERLAY := kubernetes/overlays/production
 	k8s-build k8s-diff gitops-set-image gitops-release \
 	terraform-fmt terraform-validate terraform-plan \
 	ci-local \
+	runner-register runner-up runner-down runner-status runner-logs runner-unregister \
 	ci clean
 
 help: ## Muestra esta ayuda
@@ -118,7 +119,7 @@ trivy: ## Escaneo de secretos, vulnerabilidades de dependencias e IaC
 	}
 	trivy fs --scanners vuln,secret,misconfig --exit-code 1 \
 		--severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore.yaml \
-		--skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv \
+		--skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv,.gitlab-ci-local \
 		--skip-files terraform/terraform.tfvars,terraform/terraform.tfstate,terraform/terraform.tfstate.backup,terraform/main.tfplan,terraform/bootstrap/terraform.tfstate,terraform/bootstrap/terraform.tfstate.backup \
 		.
 
@@ -268,7 +269,57 @@ ci-local: ## Corre .gitlab-ci.yml localmente con gitlab-ci-local (requiere Docke
 		echo "Instala Node.js (nodejs.org) y vuelve a correr 'make ci-local'."; \
 		exit 1; \
 	}
-	npx --yes gitlab-ci-local $(JOB)
+	MSYS_NO_PATHCONV=1 npx --yes gitlab-ci-local $(JOB)
+
+## ---------------------------------------------------------------------
+## Fase 4: runner self-hosted de GitLab CI/CD (cero minutos en la nube)
+## ---------------------------------------------------------------------
+# Flujo: 1) make runner-register TOKEN=glrt-xxx (una sola vez por maquina)
+#        2) make runner-up  (queda corriendo en background, restart automatico)
+#        git push -> gitlab.com asigna los jobs (tag local-hardware) a
+#        este runner, que los ejecuta en tu propio hardware.
+
+RUNNER_COMPOSE := docker compose -f runner/docker-compose.yml
+GITLAB_URL ?= https://gitlab.com
+
+runner-register: ## Registra este host como runner (make runner-register TOKEN=glrt-xxxxx)
+	@test -n "$(TOKEN)" || { \
+		echo "Uso: make runner-register TOKEN=glrt-xxxxx"; \
+		echo "El token se genera en: gitlab.com -> tu proyecto -> Settings > CI/CD > Runners"; \
+		echo "-> 'New project runner' -> plataforma Linux, tag 'local-hardware' -> Create runner."; \
+		exit 1; \
+	}
+	$(RUNNER_COMPOSE) run --rm gitlab-runner register \
+		--non-interactive \
+		--url "$(GITLAB_URL)" \
+		--token "$(TOKEN)" \
+		--executor "docker" \
+		--docker-image "python:3.12-slim" \
+		--docker-privileged="true" \
+		--description "local-hardware"
+	@echo "OK: runner registrado. Ahora: make runner-up"
+
+runner-up: ## Levanta el runner self-hosted (background, restart automatico)
+	$(RUNNER_COMPOSE) up -d
+
+runner-down: ## Detiene el runner self-hosted (conserva el token/config registrado)
+	$(RUNNER_COMPOSE) down
+
+runner-status: ## Muestra el estado y verifica las credenciales del runner
+	@# 'gitlab-runner status' busca un pidfile de instalacion como servicio del
+	@# sistema, que no existe corriendo via 'docker compose up -d' (PID 1 en
+	@# modo foreground) -- devuelve exit 1 aunque el runner este sano. Se
+	@# ignora ese resultado; 'verify' (que SI valida credenciales contra
+	@# gitlab.com) es la fuente de verdad real.
+	@$(RUNNER_COMPOSE) exec gitlab-runner gitlab-runner status || true
+	$(RUNNER_COMPOSE) exec gitlab-runner gitlab-runner verify
+
+runner-logs: ## Sigue los logs del runner self-hosted (Ctrl+C para salir)
+	$(RUNNER_COMPOSE) logs -f
+
+runner-unregister: ## Da de baja el runner en GitLab y borra su configuracion local
+	$(RUNNER_COMPOSE) exec gitlab-runner gitlab-runner unregister --all-runners || true
+	$(RUNNER_COMPOSE) down --volumes
 
 ## ---------------------------------------------------------------------
 ## YAML y git hooks

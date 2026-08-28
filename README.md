@@ -129,7 +129,7 @@ graph TD
 | **Cloud Infrastructure** | AWS VPC, EKS, RDS (PostgreSQL), MSK, ElastiCache (Redis), S3, ECR, Secrets Manager, IAM (OIDC federation, IRSA) | Managed, private-by-default infrastructure with no long-lived static credentials |
 | **Local Integration Testing** | Testcontainers, LocalStack | Real, ephemeral Postgres/Kafka/S3/SQS/Secrets Manager containers proving actual integration, at zero cloud cost |
 | **Monitoring & Observability** | Evidently AI, Prometheus, Grafana, structlog, tenacity, pybreaker | Data/concept drift detection, metrics, JSON-structured logs, bounded retries, circuit breaking |
-| **CI/CD** | GitLab CI/CD, AWS OIDC, gitlab-ci-local | Quality gates, smoke testing, training, image builds, and GitOps releases — runnable identically outside GitLab |
+| **CI/CD** | GitLab CI/CD, AWS OIDC, gitlab-ci-local, self-hosted GitLab Runner | Quality gates, smoke testing, training, image builds, and GitOps releases — runnable identically outside GitLab, and executable on local hardware with zero shared-runner minutes spent |
 | **Development Environment** | Poetry, DevContainers, VS Code, Make | Deterministic, reproducible local environments; a single command interface shared with CI |
 | **Code Quality & Security** | Ruff, Black, isort, mypy, pytest, Bandit, Trivy, yamllint, pre-commit | Shift-left quality gates enforced identically pre-commit and in CI |
 
@@ -332,6 +332,30 @@ make gitops-release            # commits the new image tag; ArgoCD picks it up f
 make terraform-fmt             # terraform fmt -check (never plan/apply from here)
 make ci-local                  # runs .gitlab-ci.yml locally via gitlab-ci-local
 ```
+
+### 8. Run the entire CI/CD pipeline on your own hardware (zero GitLab minutes)
+
+Two complementary layers, both driven from the Makefile, let every job in [`.gitlab-ci.yml`](.gitlab-ci.yml) run on local hardware instead of GitLab.com's shared runner fleet:
+
+- **`gitlab-ci-local`** (already wired via `make ci-local`) parses `.gitlab-ci.yml` and executes any job — or the whole pipeline — in Docker containers on this machine, for fast, disposable iteration while writing a job. No GitLab account or network round-trip involved.
+  ```bash
+  make ci-local JOB=quality       # a single job
+  make ci-local                    # the entire pipeline
+  ```
+  > **Windows/Git Bash:** `make ci-local` sets `MSYS_NO_PATHCONV=1` for you — without it, Git Bash rewrites the container's Linux `--workdir` path (e.g. `/builds/...`) into a bogus Windows path and every job fails immediately with `the working directory ... is invalid`. If you ever invoke `gitlab-ci-local` directly (bypassing `make`), set that variable yourself.
+
+- **A self-hosted GitLab Runner** (`runner/docker-compose.yml`) is what actually replaces the shared runners for real pushed pipelines. It registers against this project on gitlab.com, picks up any job tagged `local-hardware` (the [`default.tags`](.gitlab-ci.yml) every job inherits), and runs it on your own Docker daemon — the AWS OIDC trust (`terraform/iam.tf`) is scoped to the project path, not to a specific runner, so it works unmodified.
+  ```bash
+  # One-time: create a runner in GitLab.com -> Settings > CI/CD > Runners ->
+  # "New project runner" (tag: local-hardware), copy its glrt-... token, then:
+  make runner-register TOKEN=glrt-xxxxxxxxxxxx
+  make runner-up          # starts it, restart: unless-stopped
+  make runner-status      # confirm it's registered and idle
+  git push                # gitlab.com queues the job; your machine executes it
+  ```
+  `make runner-down` stops it without losing registration; `make runner-unregister` removes it from GitLab and deletes the local config volume. The runner's config/token live only in the `gitlab-runner-config` Docker volume — nothing is written to the repo.
+
+Daily loop: iterate with `make ci-local` (or the individual `make lint`/`make test`/`make smoke-test` targets) until it's green, `git push`, and the self-hosted runner reproduces the exact same pipeline — no shared-runner minutes spent, no surprises between local and CI.
 
 Deploying the full AWS/Kubernetes environment from zero (Terraform apply, EKS bootstrap, ArgoCD, GitLab CI/CD variables) is a materially longer process, involving real cloud costs and account-specific configuration; it is intentionally out of scope for this quick start.
 

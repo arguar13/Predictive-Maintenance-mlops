@@ -51,7 +51,7 @@ variable "gitlab_oidc_host" {
 variable "gitlab_project_path" {
   type        = string
   description = "namespace/proyecto de GitLab que puede asumir GitLabCIRole (claim 'sub' del id_token). Ajustar al proyecto real antes de aplicar."
-  default     = "personal-group7745334/proyecto611_verdadero"
+  default     = "personal-group7745334/predictive-maintenance-mlops"
 }
 
 # ------------------------------------------------------------------

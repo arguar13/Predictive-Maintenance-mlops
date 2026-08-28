@@ -147,7 +147,7 @@ repos:
         entry: >-
           trivy fs --scanners vuln,secret,misconfig --exit-code 1 --quiet
           --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore.yaml
-          --skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv
+          --skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv,.gitlab-ci-local
           --skip-files terraform/terraform.tfvars,terraform/terraform.tfstate,terraform/terraform.tfstate.backup,terraform/main.tfplan,terraform/bootstrap/terraform.tfstate,terraform/bootstrap/terraform.tfstate.backup
           .
         language: system

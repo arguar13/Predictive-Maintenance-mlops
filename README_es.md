@@ -129,7 +129,7 @@ graph TD
 | **Infraestructura Cloud** | AWS VPC, EKS, RDS (PostgreSQL), MSK, ElastiCache (Redis), S3, ECR, Secrets Manager, IAM (federación OIDC, IRSA) | Infraestructura gestionada, privada por defecto, sin credenciales estáticas de larga duración |
 | **Pruebas de Integración Local** | Testcontainers, LocalStack | Contenedores reales y efímeros de Postgres/Kafka/S3/SQS/Secrets Manager que prueban integración real, a coste cero |
 | **Monitoreo y Observabilidad** | Evidently AI, Prometheus, Grafana, structlog, tenacity, pybreaker | Detección de data/concept drift, métricas, logs estructurados en JSON, reintentos acotados, circuit breaking |
-| **CI/CD** | GitLab CI/CD, AWS OIDC, gitlab-ci-local | Gates de calidad, smoke testing, entrenamiento, construcción de imágenes y releases GitOps — ejecutables de forma idéntica fuera de GitLab |
+| **CI/CD** | GitLab CI/CD, AWS OIDC, gitlab-ci-local, GitLab Runner self-hosted | Gates de calidad, smoke testing, entrenamiento, construcción de imágenes y releases GitOps — ejecutables de forma idéntica fuera de GitLab, y en hardware local sin gastar minutos de shared runner |
 | **Entorno de Desarrollo** | Poetry, DevContainers, VS Code, Make | Entornos locales deterministas y reproducibles; una única interfaz de comandos compartida con CI |
 | **Calidad de Código y Seguridad** | Ruff, Black, isort, mypy, pytest, Bandit, Trivy, yamllint, pre-commit | Gates de calidad shift-left, aplicados de forma idéntica en pre-commit y en CI |
 
@@ -330,6 +330,30 @@ make gitops-release            # commitea el nuevo tag de imagen; ArgoCD lo reco
 make terraform-fmt             # terraform fmt -check (nunca plan/apply desde aquí)
 make ci-local                  # corre .gitlab-ci.yml localmente vía gitlab-ci-local
 ```
+
+### 8. Correr todo el pipeline de CI/CD en tu propio hardware (cero minutos de GitLab)
+
+Dos capas complementarias, ambas manejadas desde el Makefile, permiten que cada job de [`.gitlab-ci.yml`](.gitlab-ci.yml) corra en hardware local en vez de en la flota de shared runners de gitlab.com:
+
+- **`gitlab-ci-local`** (ya integrado vía `make ci-local`) parsea `.gitlab-ci.yml` y ejecuta cualquier job — o el pipeline completo — en contenedores Docker de esta máquina, para iterar rápido y sin fricción mientras escribes un job. No involucra cuenta de GitLab ni ida y vuelta por red.
+  ```bash
+  make ci-local JOB=quality       # un job puntual
+  make ci-local                    # el pipeline completo
+  ```
+  > **Windows/Git Bash:** `make ci-local` ya fija `MSYS_NO_PATHCONV=1` por vos — sin esa variable, Git Bash reescribe el `--workdir` Linux del contenedor (p.ej. `/builds/...`) a una ruta Windows inválida y todos los jobs fallan de inmediato con `the working directory ... is invalid`. Si alguna vez invocás `gitlab-ci-local` directamente (sin pasar por `make`), fijá vos mismo esa variable.
+
+- **Un GitLab Runner self-hosted** (`runner/docker-compose.yml`) es lo que reemplaza de verdad a los shared runners para los pipelines que se disparan con un push real. Se registra contra este proyecto en gitlab.com, toma cualquier job con el tag `local-hardware` (el [`default.tags`](.gitlab-ci.yml) que heredan todos los jobs) y lo ejecuta contra tu propio daemon Docker — el trust OIDC de AWS (`terraform/iam.tf`) está limitado por `project_path`, no por runner específico, así que funciona sin modificaciones.
+  ```bash
+  # Una sola vez: crear un runner en gitlab.com -> Settings > CI/CD > Runners ->
+  # "New project runner" (tag: local-hardware), copiar su token glrt-..., y:
+  make runner-register TOKEN=glrt-xxxxxxxxxxxx
+  make runner-up          # lo levanta, restart: unless-stopped
+  make runner-status      # confirma que quedó registrado e inactivo
+  git push                # gitlab.com encola el job; tu máquina lo ejecuta
+  ```
+  `make runner-down` lo detiene sin perder el registro; `make runner-unregister` lo da de baja en GitLab y borra el volumen de configuración local. La config/token del runner viven solo en el volumen Docker `gitlab-runner-config`: nada se escribe en el repo.
+
+Flujo diario: iterar con `make ci-local` (o los targets individuales `make lint`/`make test`/`make smoke-test`) hasta que quede en verde, `git push`, y el runner self-hosted reproduce exactamente el mismo pipeline — sin gastar minutos de shared runner y sin sorpresas entre local y CI.
 
 Desplegar el entorno completo de AWS/Kubernetes desde cero (terraform apply, bootstrap de EKS, ArgoCD, variables de CI/CD de GitLab) es un proceso considerablemente más largo, que implica costes reales de nube y configuración específica de la cuenta; queda deliberadamente fuera del alcance de esta guía rápida.
 

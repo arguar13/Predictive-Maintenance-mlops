@@ -27,7 +27,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://gitlab.com/personal-group7745334/proyecto611_verdadero.git
+    repoURL: https://gitlab.com/personal-group7745334/predictive-maintenance-mlops.git
     targetRevision: dev
     path: kubernetes/overlays/production
 
