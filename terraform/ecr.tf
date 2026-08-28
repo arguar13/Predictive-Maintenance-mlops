@@ -90,10 +90,50 @@ resource "aws_ecr_lifecycle_policy" "consumer_repo_cleanup" {
   })
 }
 
+# Imagen del servicio de deteccion de drift (monitoring/Dockerfile): antes
+# no tenia imagen propia ni Deployment -- kubernetes/base/prometheus.yml
+# scrapeaba un target ("evidently_service:8000") que nunca llegaba a existir.
+resource "aws_ecr_repository" "monitoring_repo" {
+  name                 = "${var.project_name}-monitoring"
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.mlops.arn
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "monitoring_repo_cleanup" {
+  repository = aws_ecr_repository.monitoring_repo.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Mantener solo las ultimas 10 imagenes"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = {
+        type = "expire"
+      }
+    }]
+  })
+}
+
 output "ecr_api_repository_url" {
   value = aws_ecr_repository.streaming_repo.repository_url
 }
 
 output "ecr_consumer_repository_url" {
   value = aws_ecr_repository.consumer_repo.repository_url
+}
+
+output "ecr_monitoring_repository_url" {
+  value = aws_ecr_repository.monitoring_repo.repository_url
 }

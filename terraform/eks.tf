@@ -27,6 +27,16 @@ module "eks" {
   # Fundamental para seguridad MLOps (IRSA)
   enable_irsa = true
 
+  # El modulo v20 NO le da admin al identity que corre `terraform apply` por
+  # defecto (a diferencia de versiones anteriores): sin esto, `aws eks
+  # update-kubeconfig` + `kubectl get nodes` responde "the server has asked
+  # for the client to provide credentials" pese a que el cluster esta ACTIVE
+  # y la cuenta AWS es la correcta -- el problema es autorizacion dentro de
+  # Kubernetes (RBAC/access entries), no autenticacion contra AWS. Esto crea
+  # un access entry declarativo (API_AND_CONFIG_MAP, modo por defecto del
+  # modulo) para quien aplique Terraform.
+  enable_cluster_creator_admin_permissions = true
+
   eks_managed_node_groups = {
     ml_workers = {
       min_size       = 1

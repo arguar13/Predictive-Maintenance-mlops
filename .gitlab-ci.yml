@@ -108,11 +108,12 @@ train_model:
     - when: always
 
 build_image:
-  # Construye y publica AMBAS imagenes (api + streaming-consumer -- antes
-  # solo existia la de la API y el Deployment del consumer apuntaba, por
-  # error, a esa misma imagen sin streaming/ ni sus dependencias). El tag
-  # es siempre $CI_COMMIT_SHA, nunca "latest": es la referencia inmutable
-  # que el stage "release" fija en el overlay de Kustomize.
+  # Construye y publica las TRES imagenes (api + streaming-consumer +
+  # monitoring -- antes solo existia la de la API y el Deployment del
+  # consumer apuntaba, por error, a esa misma imagen sin streaming/ ni sus
+  # dependencias). El tag es siempre $CI_COMMIT_SHA, nunca "latest": es la
+  # referencia inmutable que el stage "release" fija en el overlay de
+  # Kustomize (`make docker-build`/`docker-push` ya cubren las tres).
   stage: build
   image: docker:24.0.5
   services:

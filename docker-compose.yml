@@ -160,6 +160,28 @@ services:
       retries: 5
       start_period: 20s
 
+  # Servicio de deteccion de drift (monitoring/Dockerfile). Consume
+  # engine_telemetry, compara contra una linea base de referencia con
+  # Evidently y expone metricas Prometheus -- ver docstring de
+  # monitoring/evidently_service.py para el diseño y sus limitaciones.
+  evidently:
+    build:
+      context: .
+      dockerfile: monitoring/Dockerfile
+    environment:
+      KAFKA_BROKER: kafka:29092
+    ports:
+      - "8002:8000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 volumes:
   pgdata:
   localstack_data:

@@ -8,6 +8,7 @@ resources:
 # bloque de forma declarativa con:
 #   kustomize edit set image <repo>/predictive-maintenance-mlops-streaming=<repo>/predictive-maintenance-mlops-streaming:$CI_COMMIT_SHA
 #   kustomize edit set image <repo>/predictive-maintenance-mlops-consumer=<repo>/predictive-maintenance-mlops-consumer:$CI_COMMIT_SHA
+#   kustomize edit set image <repo>/predictive-maintenance-mlops-monitoring=<repo>/predictive-maintenance-mlops-monitoring:$CI_COMMIT_SHA
 # (ver `make gitops-set-image`) y commitea el resultado a git -- nunca un
 # `sed -i` sobre el YAML. ArgoCD sincroniza el cluster con lo que hay aqui.
 images:
@@ -16,4 +17,7 @@ images:
   newTag: latest
 - name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
   newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
+  newTag: latest
+- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
+  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
   newTag: latest
