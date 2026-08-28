@@ -167,6 +167,17 @@ build_image:
   image: docker:24.0.5
   services:
     - docker:24.0.5-dind
+  # Sin esto, el cliente docker (imagen docker:24.0.5) falla con "Cannot
+  # connect to the Docker daemon at tcp://docker:2375. Is the docker daemon
+  # running?": el servicio dind moderno arranca por defecto con TLS,
+  # escuchando en 2376 con certificados -- nunca en el 2375 sin cifrar al
+  # que el cliente intenta conectar. DOCKER_TLS_CERTDIR="" es la
+  # configuracion oficial de GitLab para dind sin TLS (aceptable aqui: el
+  # trafico cliente<->daemon es interno a la red del job, en hardware propio,
+  # nunca sale a internet).
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   <<: *aws_auth
   script:
     - apk add --no-cache make
