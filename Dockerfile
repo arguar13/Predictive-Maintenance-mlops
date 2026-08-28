@@ -23,6 +23,14 @@ WORKDIR /app
 COPY api/pyproject.toml api/poetry.lock* ./
 RUN poetry install --only main --no-interaction --no-ansi
 RUN pip install --force-reinstall "setuptools==80.9.0"
+# POETRY_VIRTUALENVS_CREATE=false hace que `poetry install` comparta site-
+# packages con la propia instalacion de Poetry (no crea un venv aislado del
+# proyecto). api/poetry.lock resuelve "packaging" en 23.2 (suficiente para
+# black/pytest/mlflow-skinny/matplotlib/skops), pero Poetry 2.4.1 necesita
+# el submodulo packaging.licenses (agregado en 24.2) para su propio CLI --
+# "poetry run ..." se rompe con "No module named 'packaging.licenses'" sin
+# este force-reinstall posterior al install del proyecto.
+RUN pip install --force-reinstall "packaging>=24.2"
 
 COPY api/ ./api/
 # config/config.yaml es OBLIGATORIO en runtime: api/config_loader.py lo

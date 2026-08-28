@@ -175,9 +175,9 @@ dvc-use-localstack: ## Redirige el remoto S3 de DVC a LocalStack (solo esta maqu
 
 compose-up: ## Levanta el stack local completo: Postgres, Kafka, Redis, MLflow, API, LocalStack
 	docker compose up -d --build
-	@echo "API:        http://localhost:8000 (503 en /health hasta que exista un modelo 'champion')"
-	@echo "MLflow UI:  http://localhost:5000"
-	@echo "LocalStack: http://localhost:4566"
+	@echo "API:        http://localhost:8001 (503 en /health hasta que exista un modelo 'champion')"
+	@echo "MLflow UI:  http://localhost:5001"
+	@echo "LocalStack: http://localhost:4567"
 
 compose-down: ## Detiene el stack local (conserva los volumenes: datos de Postgres/LocalStack)
 	docker compose down

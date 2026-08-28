@@ -50,6 +50,16 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            # MLflow >=3 rechaza por defecto cualquier Host header que no sea
+            # localhost/127.0.0.1/una IP privada literal (proteccion anti DNS
+            # rebinding). api y streaming-consumer llaman a este servidor
+            # como "http://mlflow:5000" (DNS del Service de Kubernetes), que
+            # no matchea esos patrones por defecto -> 403 "Invalid Host
+            # header". Se declara explicitamente el nombre corto y el FQDN
+            # del Service como permitidos (mismo problema que en
+            # docker-compose.yml, ver su comentario).
+            - name: MLFLOW_SERVER_ALLOWED_HOSTS
+              value: "mlflow,mlflow:*,mlflow.mlops-env,mlflow.mlops-env:*,mlflow.mlops-env.svc.cluster.local,mlflow.mlops-env.svc.cluster.local:*"
           volumeMounts:
             - name: tmp
               mountPath: /tmp

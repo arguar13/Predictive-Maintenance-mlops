@@ -21,7 +21,11 @@ services:
       POSTGRES_PASSWORD: mlflow_password
       POSTGRES_DB: mlflow_db
     ports:
-      - "5432:5432"
+      # Puerto de host 5433 (no 5432): esta maquina corre varios proyectos
+      # MLOps del mismo curso en paralelo y 5432 ya esta tomado por otro.
+      # La comunicacion entre contenedores (mlflow -> postgres:5432) usa el
+      # puerto interno del contenedor y no se ve afectada por este remapeo.
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
@@ -84,8 +88,19 @@ services:
       --backend-store-uri postgresql://mlflow_user:mlflow_password@postgres:5432/mlflow_db
       --serve-artifacts
       --artifacts-destination /mlruns
+    environment:
+      # MLflow >=3 rechaza por defecto cualquier Host header que no sea
+      # localhost/127.0.0.1/una IP privada literal (proteccion anti DNS
+      # rebinding). El servicio "api" llama a este servidor como
+      # "http://mlflow:5000" (DNS interno de compose), que no matchea esos
+      # patrones por defecto -> 403 "Invalid Host header". Hay que declarar
+      # explicitamente el hostname del servicio como permitido.
+      MLFLOW_SERVER_ALLOWED_HOSTS: "mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*"
     ports:
-      - "5000:5000"
+      # 5001 en el host (no 5000): mismo motivo que postgres arriba, otro
+      # proyecto de este curso ya ocupa 5000. El puerto interno del
+      # contenedor sigue siendo 5000 (ver MLFLOW_TRACKING_URI del servicio api).
+      - "5001:5000"
     volumes:
       - ./mlruns:/mlruns
     depends_on:
@@ -112,7 +127,8 @@ services:
       AWS_SECRET_ACCESS_KEY: test
       PERSISTENCE: 0
     ports:
-      - "4566:4566"
+      # 4567 en el host (no 4566): mismo motivo que postgres/mlflow arriba.
+      - "4567:4566"
     volumes:
       - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
       - localstack_data:/var/lib/localstack
@@ -132,7 +148,8 @@ services:
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:
-      - "8000:8000"
+      # 8001 en el host (no 8000): mismo motivo que postgres/mlflow arriba.
+      - "8001:8000"
     depends_on:
       mlflow:
         condition: service_healthy
