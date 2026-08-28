@@ -13,6 +13,11 @@ resource "aws_ecr_repository" "streaming_repo" {
   # silencio. Encaja con el esquema de tags del proyecto, que ya usa el
   # commit SHA (Makefile: IMAGE_TAG), nunca "latest", en un release real.
   image_tag_mutability = "IMMUTABLE"
+  # force_destroy: este proyecto pasa por ciclos destroy/apply frecuentes
+  # (entorno de curso, no produccion real) -- sin esto, "terraform destroy"
+  # falla si el repo tiene alguna imagen publicada, y hay que vaciarlo a mano
+  # con la AWS CLI antes de poder destruir.
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -58,6 +63,11 @@ resource "aws_ecr_repository" "consumer_repo" {
   # silencio. Encaja con el esquema de tags del proyecto, que ya usa el
   # commit SHA (Makefile: IMAGE_TAG), nunca "latest", en un release real.
   image_tag_mutability = "IMMUTABLE"
+  # force_destroy: este proyecto pasa por ciclos destroy/apply frecuentes
+  # (entorno de curso, no produccion real) -- sin esto, "terraform destroy"
+  # falla si el repo tiene alguna imagen publicada, y hay que vaciarlo a mano
+  # con la AWS CLI antes de poder destruir.
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -96,6 +106,11 @@ resource "aws_ecr_lifecycle_policy" "consumer_repo_cleanup" {
 resource "aws_ecr_repository" "monitoring_repo" {
   name                 = "${var.project_name}-monitoring"
   image_tag_mutability = "IMMUTABLE"
+  # force_destroy: este proyecto pasa por ciclos destroy/apply frecuentes
+  # (entorno de curso, no produccion real) -- sin esto, "terraform destroy"
+  # falla si el repo tiene alguna imagen publicada, y hay que vaciarlo a mano
+  # con la AWS CLI antes de poder destruir.
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
