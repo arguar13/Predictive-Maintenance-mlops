@@ -5,7 +5,18 @@
 #
 # Instalacion de ArgoCD (una sola vez por cluster):
 #   kubectl create namespace argocd
-#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.2/manifests/install.yaml
+#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml --server-side --force-conflicts
+#
+# "stable" (no una version anclada como v2.13.2) porque el calculo de diff de
+# ArgoCD depende de su propio esquema interno de tipos de Kubernetes: una
+# version de ArgoCD mas vieja que el cluster no reconoce campos nuevos del
+# API (p.ej. Deployment.status.terminatingReplicas, agregado en Kubernetes
+# 1.33+) y el sync queda en SYNC STATUS "Unknown" con
+# "error building typed value from live resource: <campo> not declared in
+# schema". --server-side --force-conflicts: el install.yaml incluye CRDs
+# (ApplicationSet) cuyo esquema OpenAPI excede el limite de 262144 bytes de
+# la annotation kubectl.kubernetes.io/last-applied-configuration que usa un
+# `apply` normal.
 #
 # Registrar esta aplicacion:
 #   kubectl apply -f gitops/argocd/application.yaml

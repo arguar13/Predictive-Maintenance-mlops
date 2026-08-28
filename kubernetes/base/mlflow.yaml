@@ -72,12 +72,14 @@ spec:
           # Sin requests/limits el pod es BestEffort: es el primero que el
           # kubelet desaloja bajo presion de memoria, justo cuando mas falta
           # hace el tracking server (KSV-0011/0015/0016/0018).
+          # 1Gi de limite producia OOMKilled en el arranque real contra
+          # Postgres/RDS (los nodos EKS son t3.large, 8GiB, hay margen de sobra).
           resources:
             requests:
-              memory: "512Mi"
+              memory: "1Gi"
               cpu: "250m"
             limits:
-              memory: "1Gi"
+              memory: "2Gi"
               cpu: "1000m"
           readinessProbe:
             httpGet:
