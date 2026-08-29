@@ -1,5 +1,13 @@
 resource "aws_s3_bucket" "mlflow_artifacts" {
   bucket = "${var.project_name}-artifacts-${data.aws_caller_identity.current.account_id}"
+  # force_destroy: mismo criterio que los repos ECR (terraform/ecr.tf) -- este
+  # proyecto pasa por ciclos destroy/apply completos (entrega de curso, no un
+  # entorno productivo de largo plazo). Sin esto, `terraform destroy` falla
+  # en cuanto el bucket tiene objetos (datos de DVC, parquet de Feast,
+  # artefactos de MLflow) o versiones antiguas (versioning esta habilitado
+  # mas abajo); force_destroy vacia el bucket, incluidas todas las versiones,
+  # antes de eliminarlo.
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "mlflow_artifacts_versioning" {
