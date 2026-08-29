@@ -14,13 +14,13 @@ resources:
 images:
 - name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
   newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
-  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
+  newTag: d45915c508d1663e75ecaba3a80b03447397733e
 - name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow
   newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow
-  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
+  newTag: d45915c508d1663e75ecaba3a80b03447397733e
 - name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
   newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
-  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
+  newTag: d45915c508d1663e75ecaba3a80b03447397733e
 - name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
   newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
-  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
+  newTag: d45915c508d1663e75ecaba3a80b03447397733e
