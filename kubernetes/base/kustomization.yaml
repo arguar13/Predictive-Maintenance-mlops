@@ -9,6 +9,7 @@ resources:
   - mlflow.yaml
   - api.yaml
   - streaming-consumer.yaml
+  - feast-materialize-cronjob.yaml
   - evidently.yaml
   - prometheus.yaml
   - grafana.yaml

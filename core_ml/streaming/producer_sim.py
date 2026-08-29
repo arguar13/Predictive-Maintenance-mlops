@@ -8,8 +8,11 @@ Correcciones respecto a la version anterior:
     dentro del cluster nunca hubiera encontrado un broker.
   * Los topics tambien salen de config.yaml, en vez de una constante local
     que podia divergir de la que usa el consumidor.
-  * `num_features` se toma de `model.num_features` (14), no de un 24 fijo
-    que no correspondia a ninguna parte del pipeline.
+  * `num_features` se toma de `model.num_features` (config/config.yaml),
+    nunca de una constante local -- asi coincide automaticamente con
+    cualquier reentrenamiento futuro que cambie la forma de entrada del
+    modelo (el valor real hoy es 24: dataset completo FD001-FD004, ver la
+    nota en config/config.yaml).
   * Logging JSON estructurado (structlog) en vez de print(), igual que el
     resto de componentes -- consultable en CloudWatch Logs Insights.
   * Transporte TLS configurable por entorno (ver streaming/kafka_security.py),

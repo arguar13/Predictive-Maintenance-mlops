@@ -24,7 +24,7 @@ engine_window_fv = FeatureView(
     entities=[engine],
     ttl=timedelta(days=1),  # Retención en el Online Store
     schema=[
-        Field(name="windowed_features", dtype=Array(Float32)),  # Array aplanado 30x14
+        Field(name="windowed_features", dtype=Array(Float32)),  # Array aplanado 30x24
         Field(name="failure_type", dtype=Int32),
     ],
     online=True,

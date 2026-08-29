@@ -9,7 +9,21 @@ kafka:
 
 model:
   window_size: 30
-  num_features: 14
+  # 24 = sensores + operating settings que sobreviven clean_and_prepare()
+  # sobre el dataset COMPLETO (FD001-FD004 combinados, ver
+  # core_ml/src/data_processing.py): al combinar las 4 sub-series (6
+  # condiciones operativas distintas) ningun sensor resulta invariante. El
+  # valor historico (14) correspondia solo a data_toy/ (unicamente
+  # train_FD001.txt, una sola condicion operativa, con 7 sensores
+  # invariantes descartados) y quedo desactualizado tras entrenar en
+  # produccion contra el dataset completo (confirmado via GET /health:
+  # {"num_features": 24} del modelo champion real). api/main.py ya no
+  # depende de este valor (infiere la forma real desde el scaler del
+  # modelo servido); pero evidently_service.py y
+  # core_ml/streaming/producer_sim.py si lo usan directamente, y deben
+  # coincidir con el modelo real para no descartar cada ventana con
+  # "unexpected_window_shape" / "no_online_features".
+  num_features: 24
   mlflow_tracking_uri: "${MLFLOW_TRACKING_URI}"  # Inyectado por K8s
   model_name: "Turbofan_FCN"
 
