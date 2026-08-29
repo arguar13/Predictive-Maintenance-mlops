@@ -12,15 +12,15 @@ resources:
 # (ver `make gitops-set-image`) y commitea el resultado a git -- nunca un
 # `sed -i` sobre el YAML. ArgoCD sincroniza el cluster con lo que hay aqui.
 images:
-- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
-  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
-  newTag: latest
 - name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
   newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-consumer
-  newTag: latest
-- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
-  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
-  newTag: latest
+  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
 - name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow
   newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow
-  newTag: latest
+  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
+- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
+  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-monitoring
+  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
+- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
+  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
+  newTag: 4b0139685932c56ea3e20fba196273a7dc418fdc
