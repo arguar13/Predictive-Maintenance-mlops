@@ -163,7 +163,15 @@ resource "aws_iam_policy" "gitlab_ci_policy" {
           "ecr:PutImage",
           "ecr:InitiateLayerUpload",
           "ecr:UploadLayerPart",
-          "ecr:CompleteLayerUpload"
+          "ecr:CompleteLayerUpload",
+          # Sin esto, el chequeo skip-if-exists de `make docker-buildx-push-*`
+          # (Makefile: `aws ecr describe-images` antes de cada push, necesario
+          # porque los repos son IMMUTABLE y un retry de build_image no puede
+          # re-publicar una imagen ya subida en un intento previo) fallaba con
+          # AccessDenied -- indistinguible en el `if` de un "tag no existe",
+          # asi que el reintento SIEMPRE volvia a intentar el push y reventaba
+          # contra el mismo error de tag inmutable que se queria evitar.
+          "ecr:DescribeImages"
         ]
         Resource = [
           aws_ecr_repository.streaming_repo.arn,
