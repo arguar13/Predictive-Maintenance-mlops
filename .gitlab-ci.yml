@@ -193,7 +193,31 @@ build_image:
     # docker-buildx-push (Makefile) -- sin el, --cache-to falla o se ignora
     # en silencio y cada corrida vuelve a subir la capa de torch entera.
     - docker buildx create --use --driver docker-container
-    - make docker-buildx-push AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
+    # Resiliencia observada empiricamente en este runner self-hosted (red
+    # domestica): el push de buildkitd hacia ECR a veces deja de emitir
+    # progreso a mitad de una capa grande (torch) y el proceso queda
+    # colgado indefinidamente -- la conexion TCP muere sin FIN/RST (NAT
+    # domestico cerrando el socket en silencio tras inactividad), asi que
+    # ni buildkit ni el job detectan el fallo por si solos y el job
+    # consumiria las 2h de `timeout:` sin avanzar. `timeout` corta cada
+    # intento a los 15 min; si se corta o falla, se reintenta DENTRO del
+    # mismo job (mismo contenedor dind, mismo cache local de buildx) hasta
+    # 3 veces -- nunca reintentos infinitos.
+    - |
+      run_with_retry() {
+        attempts=3
+        per_attempt_timeout=900
+        n=1
+        until timeout "$per_attempt_timeout" "$@"; do
+          if [ "$n" -ge "$attempts" ]; then
+            echo "ERROR: comando fallo tras $attempts intentos (cada uno cortado a los ${per_attempt_timeout}s): $*" >&2
+            return 1
+          fi
+          echo "AVISO: intento $n/$attempts fallo o se colgo (posible conexion TCP muerta hacia ECR); reintentando..."
+          n=$((n + 1))
+        done
+      }
+      run_with_retry make docker-buildx-push AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
 
 release:
   # GitOps, no despliegue imperativo: este job NO habla con el cluster (sin

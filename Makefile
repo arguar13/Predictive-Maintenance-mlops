@@ -268,29 +268,55 @@ docker-push: docker-push-api docker-push-consumer docker-push-monitoring docker-
 # instruccion y sus inputs coincidan exactamente, no que sea "la misma
 # imagen". Los 4 builds corren secuenciales (ver target docker-buildx-push
 # mas abajo), asi que no hay condicion de carrera escribiendo el mismo tag.
+# Idempotencia (skip-if-exists): las 4 imagenes se publican en repos ECR
+# IMMUTABLE (terraform/ecr.tf) -- correcto para produccion (un tag jamas
+# cambia de contenido bajo los pies de un despliegue), pero significa que
+# reintentar `docker-buildx-push` tras un fallo PARCIAL (p.ej. build_image
+# se cuelga en la imagen 3 de 4, ya con la 1 y 2 subidas con exito) revienta
+# con "tag already exists ... cannot be overwritten" al re-intentar
+# re-publicar una imagen que ya habia llegado a ECR en el intento anterior.
+# Cada target comprueba primero si $(IMAGE_TAG) ya existe en su repo y, si
+# es asi, omite el build+push -- necesario para que un retry del job
+# build_image (manual o automatico, ver .gitlab-ci.yml) sea seguro.
 docker-buildx-push-api: ## Build+push de la API con cache remoto de BuildKit (CI)
-	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
-		-t $(API_IMAGE):$(IMAGE_TAG) -f Dockerfile .
+	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-streaming --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
+		echo "predictive-maintenance-mlops-streaming:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
+	else \
+		docker buildx build --push \
+			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			-t $(API_IMAGE):$(IMAGE_TAG) -f Dockerfile . ; \
+	fi
 
 docker-buildx-push-consumer: ## Build+push del streaming-consumer con cache remoto de BuildKit (CI)
-	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
-		-t $(CONSUMER_IMAGE):$(IMAGE_TAG) -f core_ml/Dockerfile .
+	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-consumer --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
+		echo "predictive-maintenance-mlops-consumer:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
+	else \
+		docker buildx build --push \
+			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			-t $(CONSUMER_IMAGE):$(IMAGE_TAG) -f core_ml/Dockerfile . ; \
+	fi
 
 docker-buildx-push-monitoring: ## Build+push de monitoring con cache remoto de BuildKit (CI)
-	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
-		-t $(MONITORING_IMAGE):$(IMAGE_TAG) -f monitoring/Dockerfile .
+	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-monitoring --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
+		echo "predictive-maintenance-mlops-monitoring:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
+	else \
+		docker buildx build --push \
+			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			-t $(MONITORING_IMAGE):$(IMAGE_TAG) -f monitoring/Dockerfile . ; \
+	fi
 
 docker-buildx-push-mlflow: ## Build+push de MLflow con cache remoto de BuildKit (CI)
-	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
-		-t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow .
+	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-mlflow --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
+		echo "predictive-maintenance-mlops-mlflow:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
+	else \
+		docker buildx build --push \
+			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			-t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow . ; \
+	fi
 
 docker-buildx-push: docker-buildx-push-api docker-buildx-push-consumer docker-buildx-push-monitoring docker-buildx-push-mlflow ## Build+push de las 4 imagenes con cache remoto (usado por build_image en CI)
 
