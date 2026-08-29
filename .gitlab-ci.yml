@@ -192,28 +192,43 @@ build_image:
     # que soporta el exporter de cache "type=registry" que usa
     # docker-buildx-push (Makefile) -- sin el, --cache-to falla o se ignora
     # en silencio y cada corrida vuelve a subir la capa de torch entera.
-    - docker buildx create --use --driver docker-container
+    # --name ci-builder (fijo, no autogenerado): permite localizarlo y
+    # recrearlo de forma deterministica en cada reintento (ver mas abajo).
+    - docker buildx create --use --name ci-builder --driver docker-container
     # Resiliencia observada empiricamente en este runner self-hosted (red
-    # domestica): el push de buildkitd hacia ECR a veces deja de emitir
-    # progreso a mitad de una capa grande (torch) y el proceso queda
-    # colgado indefinidamente -- la conexion TCP muere sin FIN/RST (NAT
-    # domestico cerrando el socket en silencio tras inactividad), asi que
-    # ni buildkit ni el job detectan el fallo por si solos y el job
-    # consumiria las 2h de `timeout:` sin avanzar. `timeout` corta cada
-    # intento a los 15 min; si se corta o falla, se reintenta DENTRO del
-    # mismo job (mismo contenedor dind, mismo cache local de buildx) hasta
-    # 3 veces -- nunca reintentos infinitos.
+    # domestica), dos veces en la misma sesion: el push de buildkitd hacia
+    # ECR deja de emitir progreso a mitad de una capa grande y el proceso
+    # queda colgado indefinidamente -- la conexion TCP muere sin FIN/RST
+    # (probable NAT domestico cerrando el socket en silencio tras
+    # inactividad). Confirmado con `docker exec` + `ps`/`netstat` dentro del
+    # contenedor dind: CERO conexiones activas hacia el registry mientras
+    # el job seguia "running" durante mas de 20 minutos sin nuevo output.
+    #
+    # `timeout` por si solo NO alcanza: mata el proceso CLIENTE
+    # (`docker buildx build`), pero el daemon buildkitd que ejecuta el push
+    # de verdad corre en un contenedor aparte (buildx_buildkit_ci-builder0,
+    # dentro del mismo dind) y sigue atascado del lado servidor aunque el
+    # cliente muera -- un reintento contra el MISMO builder hereda el mismo
+    # atasco. Por eso cada reintento recrea el builder por completo
+    # (`buildx rm` + `buildx create`), lo que mata y repone el buildkitd
+    # atascado; el cache remoto en ECR (--cache-from/--cache-to
+    # type=registry) y el skip-if-exists del Makefile (imagenes ya
+    # publicadas en un intento previo) hacen que el reintento sea barato.
+    # `timeout -k 30` fuerza SIGKILL 30s despues de un SIGTERM ignorado.
+    # Hasta 3 intentos, nunca infinito.
     - |
       run_with_retry() {
         attempts=3
         per_attempt_timeout=900
         n=1
-        until timeout "$per_attempt_timeout" "$@"; do
+        until timeout -k 30 "$per_attempt_timeout" "$@"; do
           if [ "$n" -ge "$attempts" ]; then
             echo "ERROR: comando fallo tras $attempts intentos (cada uno cortado a los ${per_attempt_timeout}s): $*" >&2
             return 1
           fi
-          echo "AVISO: intento $n/$attempts fallo o se colgo (posible conexion TCP muerta hacia ECR); reintentando..."
+          echo "AVISO: intento $n/$attempts fallo o se colgo (posible conexion TCP muerta hacia ECR); recreando el builder de buildx (mata cualquier buildkitd atascado) y reintentando..."
+          docker buildx rm ci-builder >/dev/null 2>&1 || true
+          docker buildx create --use --name ci-builder --driver docker-container
           n=$((n + 1))
         done
       }
