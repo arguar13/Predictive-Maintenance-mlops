@@ -54,7 +54,9 @@ from kafka import KafkaConsumer
 from prometheus_client import Gauge, start_http_server
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "core_ml" / "src"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "core_ml" / "streaming"))
 from config_loader import load_config  # noqa: E402
+from kafka_security import kafka_client_kwargs  # noqa: E402
 from logging_config import configure_logging  # noqa: E402
 
 log = configure_logging("evidently-drift-monitor")
@@ -183,6 +185,12 @@ def run_monitoring_service() -> None:
         bootstrap_servers=kafka_broker,
         auto_offset_reset="latest",
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
+        # Sin esto, kafka-python intenta auto-detectar la version del broker
+        # hablando texto plano contra el listener TLS de MSK (puerto 9094,
+        # terraform/msk.tf: encryption_in_transit.client_broker = "TLS") y el
+        # handshake se cae con kafka.errors.UnrecognizedBrokerVersion. Mismo
+        # modulo que ya usa el streaming-consumer real (kafka_security.py).
+        **kafka_client_kwargs(),
     )
 
     batch_rows: list[np.ndarray] = []

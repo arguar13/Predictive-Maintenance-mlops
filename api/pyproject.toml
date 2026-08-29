@@ -47,6 +47,14 @@ pyyaml = "^6.0.1"
 # falla con ModuleNotFoundError en cuanto se descarga un scaler real desde MLflow.
 scikit-learn = ">=1.4.0"
 structlog = "^26.1.0" # logging JSON estructurado (Fase 4: CloudWatch/Elasticsearch)
+# mlflow.pytorch.load_model contra un artifact-root real (s3://..., ver
+# terraform/s3.tf + kubernetes/base/mlflow.yaml) usa boto3/botocore por
+# debajo (mlflow.store.artifact.s3_artifact_repo) para listar/descargar los
+# artefactos del modelo. Sin esto, nunca fallaba en local (el MLflow de
+# docker-compose usa un artifact-root en disco), pero contra el MLflow real
+# de EKS la API jamas pudo cargar el modelo: ModuleNotFoundError: 'botocore'
+# en el primer /health, service permanentemente 503.
+boto3 = ">=1.38.27"
 
 # ---------------------------------------------------------------------------
 # Elevaciones de dependencias TRANSITIVAS por CVE

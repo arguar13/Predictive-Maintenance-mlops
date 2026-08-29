@@ -28,11 +28,13 @@ WORKDIR /app/monitoring
 RUN poetry install --no-interaction --no-ansi
 WORKDIR /app
 
-# Solo los 3 modulos que evidently_service.py realmente importa (via
-# sys.path.append hacia "../core_ml/src", ver su docstring) -- no todo
-# core_ml/src/, que incluye train.py/data_processing.py/prepare_feast_data.py
-# y sus propias dependencias pesadas (torch, pandera) sin uso aqui.
+# Solo los modulos que evidently_service.py realmente importa (via
+# sys.path.append hacia "../core_ml/src" y "../core_ml/streaming") -- no todo
+# core_ml/src|streaming/, que incluye train.py/data_processing.py/
+# prepare_feast_data.py/kafka_consumer.py y sus propias dependencias pesadas
+# (torch, pandera) sin uso aqui.
 COPY core_ml/src/config_loader.py core_ml/src/config_schema.py core_ml/src/logging_config.py ./core_ml/src/
+COPY core_ml/streaming/kafka_security.py ./core_ml/streaming/
 COPY config/ ./config/
 COPY monitoring/evidently_service.py ./monitoring/evidently_service.py
 
