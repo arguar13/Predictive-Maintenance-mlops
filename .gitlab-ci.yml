@@ -205,9 +205,17 @@ release:
   # de CI nunca vuelve a tocar el cluster directamente.
   #
   # Requiere que el runner pueda pushear a este repo: por defecto GitLab
-  # configura el remote "origin" con el CI_JOB_TOKEN del propio pipeline;
-  # si la rama esta protegida, habilita "Allowed to push" para el rol
-  # "Maintainer"/CI en Settings > Repository > Protected branches.
+  # configura el remote "origin" con el CI_JOB_TOKEN del propio pipeline. Dos
+  # permisos DISTINTOS pueden bloquear ese push, e independientes entre si:
+  #   1. Si la rama esta protegida, "Allowed to push" para el rol
+  #      "Maintainer"/CI en Settings > Repository > Protected branches.
+  #   2. Settings > CI/CD > Job token permissions > "Allow this project's job
+  #      tokens to push to this project's repository" (API:
+  #      ci_push_repository_for_job_token_allowed). Este es el que realmente
+  #      bloqueaba el push en "dev" (rama SIN proteger): GitLab rechaza el
+  #      push del CI_JOB_TOKEN con 403 "You are not allowed to push code to
+  #      this project" si este segundo ajuste esta deshabilitado, sin
+  #      importar el estado de branch protection.
   stage: release
   needs: ["build_image"]
   image: alpine:3.20
