@@ -278,13 +278,22 @@ docker-push: docker-push-api docker-push-consumer docker-push-monitoring docker-
 # Cada target comprueba primero si $(IMAGE_TAG) ya existe en su repo y, si
 # es asi, omite el build+push -- necesario para que un retry del job
 # build_image (manual o automatico, ver .gitlab-ci.yml) sea seguro.
+#
+# --cache-to SIN ",mode=max": los 4 Dockerfiles son de una sola etapa (un
+# unico FROM, sin build multi-stage) -- "mode=max" solo aporta valor
+# exportando capas que un build multi-stage descarta del resultado final,
+# algo que aqui no existe. Con un solo stage, el modo por defecto ("min")
+# ya cachea exactamente las mismas capas que importan (incluida la de
+# poetry install), asi que "mode=max" era trafico extra sin beneficio real
+# -- y ademas la fase mas propensa a colgarse contra la red domestica de
+# este runner (ver comentario de resiliencia en .gitlab-ci.yml).
 docker-buildx-push-api: ## Build+push de la API con cache remoto de BuildKit (CI)
 	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-streaming --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
 		echo "predictive-maintenance-mlops-streaming:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
 	else \
 		docker buildx build --push \
 			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
 			-t $(API_IMAGE):$(IMAGE_TAG) -f Dockerfile . ; \
 	fi
 
@@ -294,7 +303,7 @@ docker-buildx-push-consumer: ## Build+push del streaming-consumer con cache remo
 	else \
 		docker buildx build --push \
 			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
 			-t $(CONSUMER_IMAGE):$(IMAGE_TAG) -f core_ml/Dockerfile . ; \
 	fi
 
@@ -304,7 +313,7 @@ docker-buildx-push-monitoring: ## Build+push de monitoring con cache remoto de B
 	else \
 		docker buildx build --push \
 			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
 			-t $(MONITORING_IMAGE):$(IMAGE_TAG) -f monitoring/Dockerfile . ; \
 	fi
 
@@ -314,7 +323,7 @@ docker-buildx-push-mlflow: ## Build+push de MLflow con cache remoto de BuildKit 
 	else \
 		docker buildx build --push \
 			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
+			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
 			-t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow . ; \
 	fi
 
