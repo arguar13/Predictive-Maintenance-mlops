@@ -215,11 +215,18 @@ build_image:
     # type=registry) y el skip-if-exists del Makefile (imagenes ya
     # publicadas en un intento previo) hacen que el reintento sea barato.
     # `timeout -k 30` fuerza SIGKILL 30s despues de un SIGTERM ignorado.
-    # Hasta 3 intentos, nunca infinito.
+    # Hasta 6 intentos, nunca infinito. Confirmado en produccion que el
+    # mecanismo funciona (kill del intento colgado + skip-if-exists en el
+    # reintento), pero la red domestica de este runner sigue soltando la
+    # conexion de forma intermitente incluso con el builder recien creado
+    # -- 3 intentos (45 min) no bastaron dos corridas seguidas. Se sube a 6
+    # intentos de 10 min (60 min en el peor caso, siempre dentro de las 2h
+    # de `timeout:` del job); cada intento fallido es barato gracias al
+    # skip-if-exists (Makefile) sobre las imagenes ya publicadas.
     - |
       run_with_retry() {
-        attempts=3
-        per_attempt_timeout=900
+        attempts=6
+        per_attempt_timeout=600
         n=1
         until timeout -k 30 "$per_attempt_timeout" "$@"; do
           if [ "$n" -ge "$attempts" ]; then
