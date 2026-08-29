@@ -53,6 +53,24 @@ misconfigurations:
       de revision.
     expired_at: 2027-02-28
 
+  - id: AWS-0031
+    paths:
+      - "terraform/ecr.tf"
+    statement: >-
+      "Repository tags are mutable", unicamente para
+      aws_ecr_repository.build_cache. A diferencia de los otros 4 repos ECR
+      de este archivo (imagenes de release, correctamente IMMUTABLE), este
+      repo nunca se despliega: solo lo lee/escribe `docker buildx build
+      --cache-from/--cache-to type=registry,...,mode=max` (ver Makefile,
+      target docker-buildx-push-*) para cachear capas de dependencias
+      pesadas (torch) entre corridas del job build_image, cuyo servicio dind
+      es efimero. Ese exporter de cache reescribe el MISMO tag en cada
+      build por diseño; con IMMUTABLE, el segundo push del mismo tag
+      fallaria con ImageTagAlreadyExists y el cache dejaria de funcionar.
+      Ningun Deployment de kubernetes/ referencia jamas una imagen de este
+      repo.
+    expired_at: 2027-02-28
+
 vulnerabilities:
   - id: CVE-2026-69247
     paths:

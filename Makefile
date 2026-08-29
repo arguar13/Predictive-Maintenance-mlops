@@ -11,6 +11,7 @@ API_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-streaming
 CONSUMER_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-consumer
 MONITORING_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-monitoring
 MLFLOW_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-mlflow
+BUILD_CACHE_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-build-cache
 # Tag inmutable y trazable: por defecto el commit de git (igual que
 # CI_COMMIT_SHA en GitLab) -- nunca "latest" en un release real.
 IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
@@ -26,6 +27,8 @@ GITOPS_OVERLAY := kubernetes/overlays/production
 	compose-up compose-down compose-destroy compose-logs compose-ps localstack-env \
 	docker-build-api docker-build-consumer docker-build-monitoring docker-build-mlflow docker-build \
 	docker-push-api docker-push-consumer docker-push-monitoring docker-push-mlflow docker-push \
+	docker-buildx-push-api docker-buildx-push-consumer docker-buildx-push-monitoring \
+	docker-buildx-push-mlflow docker-buildx-push \
 	k8s-build k8s-diff gitops-set-image gitops-release \
 	terraform-fmt terraform-validate terraform-plan \
 	ci-local \
@@ -231,6 +234,47 @@ docker-push-mlflow: ## Publica la imagen de MLflow en ECR
 	docker push $(MLFLOW_IMAGE):$(IMAGE_TAG)
 
 docker-push: docker-push-api docker-push-consumer docker-push-monitoring docker-push-mlflow ## Publica las cuatro imagenes en ECR
+
+## ---------------------------------------------------------------------
+## Fase 4: build+push con cache remoto de BuildKit (para CI, no uso local)
+## ---------------------------------------------------------------------
+# El servicio dind del job build_image (.gitlab-ci.yml) es efimero: sin esto,
+# CADA corrida reconstruye y resube desde cero la capa de dependencias de
+# torch (~250MB, compartida por api y streaming-consumer), lo que en un
+# ancho de banda de subida domestico limitado hizo fallar build_image por el
+# timeout de 1h del job. `docker buildx build --push` con
+# --cache-from/--cache-to type=registry persiste esa capa en el repo ECR
+# dedicado predictive-maintenance-mlops-build-cache (ver terraform/ecr.tf):
+# solo se vuelve a subir cuando el poetry.lock correspondiente cambia
+# realmente. docker-build-*/docker-push-* (arriba) se conservan intactos
+# para desarrollo local, donde Docker Desktop ya cachea capas entre builds
+# y este problema no existe.
+
+docker-buildx-push-api: ## Build+push de la API con cache remoto de BuildKit (CI)
+	docker buildx build --push \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):api \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):api,mode=max \
+		-t $(API_IMAGE):$(IMAGE_TAG) -f Dockerfile .
+
+docker-buildx-push-consumer: ## Build+push del streaming-consumer con cache remoto de BuildKit (CI)
+	docker buildx build --push \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):consumer \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):consumer,mode=max \
+		-t $(CONSUMER_IMAGE):$(IMAGE_TAG) -f core_ml/Dockerfile .
+
+docker-buildx-push-monitoring: ## Build+push de monitoring con cache remoto de BuildKit (CI)
+	docker buildx build --push \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):monitoring \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):monitoring,mode=max \
+		-t $(MONITORING_IMAGE):$(IMAGE_TAG) -f monitoring/Dockerfile .
+
+docker-buildx-push-mlflow: ## Build+push de MLflow con cache remoto de BuildKit (CI)
+	docker buildx build --push \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):mlflow \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):mlflow,mode=max \
+		-t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow .
+
+docker-buildx-push: docker-buildx-push-api docker-buildx-push-consumer docker-buildx-push-monitoring docker-buildx-push-mlflow ## Build+push de las 4 imagenes con cache remoto (usado por build_image en CI)
 
 k8s-build: ## Renderiza el overlay de produccion (kustomize build) para inspeccion/dry-run
 	kubectl kustomize $(GITOPS_OVERLAY)

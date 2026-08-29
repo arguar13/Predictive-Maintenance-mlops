@@ -181,6 +181,58 @@ resource "aws_ecr_lifecycle_policy" "mlflow_repo_cleanup" {
   })
 }
 
+# Cache remoto de BuildKit (docker buildx --cache-from/--cache-to type=registry),
+# NO imagenes de release: build_image reconstruye las 4 imagenes desde cero
+# en cada corrida porque el servicio dind del job es efimero (sin cache de
+# capas entre ejecuciones), asi que la capa de dependencias de torch
+# (~250MB, compartida por las imagenes de api y streaming-consumer) se
+# volvia a subir entera cada vez -- con un ancho de banda de subida
+# domestico limitado, eso hizo fallar build_image por timeout de 1h del
+# job mas de una vez. Con cache remoto, esa capa solo se sube de nuevo
+# cuando el poetry.lock correspondiente cambia.
+# MUTABLE (a diferencia de los repos de arriba): un tag de cache se
+# reescribe en cada build por diseño (--cache-to ... ,mode=max), y con
+# IMMUTABLE ECR rechazaria ese push. No compromete la garantia de
+# inmutabilidad de los repos de release: este repo nunca se despliega,
+# solo lo lee `docker buildx build --cache-from`.
+resource "aws_ecr_repository" "build_cache" {
+  name                 = "${var.project_name}-build-cache"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.mlops.arn
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "build_cache_cleanup" {
+  repository = aws_ecr_repository.build_cache.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Mantener solo las ultimas 10 imagenes de cache por tag"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = {
+        type = "expire"
+      }
+    }]
+  })
+}
+
+output "ecr_build_cache_repository_url" {
+  value = aws_ecr_repository.build_cache.repository_url
+}
+
 output "ecr_mlflow_repository_url" {
   value = aws_ecr_repository.mlflow_repo.repository_url
 }

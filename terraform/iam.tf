@@ -146,6 +146,14 @@ resource "aws_iam_policy" "gitlab_ci_policy" {
         Resource = "*"
       },
       {
+        # ANTES solo listaba streaming_repo/consumer_repo: build_image hace
+        # push de las CUATRO imagenes (api/streaming, consumer, monitoring,
+        # mlflow), pero nunca habia llegado a intentar el push de
+        # monitoring/mlflow via este rol (se quedaba sin ancho de banda en
+        # el push de api, mucho antes) -- hubiera fallado con AccessDenied
+        # en cuanto el pipeline llegara ahi. build_cache: repo de cache
+        # remoto de BuildKit (docker buildx --cache-from/--cache-to), no una
+        # imagen de release.
         Sid    = "EcrPushPull"
         Effect = "Allow"
         Action = [
@@ -159,7 +167,10 @@ resource "aws_iam_policy" "gitlab_ci_policy" {
         ]
         Resource = [
           aws_ecr_repository.streaming_repo.arn,
-          aws_ecr_repository.consumer_repo.arn
+          aws_ecr_repository.consumer_repo.arn,
+          aws_ecr_repository.monitoring_repo.arn,
+          aws_ecr_repository.mlflow_repo.arn,
+          aws_ecr_repository.build_cache.arn
         ]
       },
       {

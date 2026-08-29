@@ -156,12 +156,11 @@ train_model:
     - poetry run python src/train.py --data-dir data --data-source feast --epochs 25 --patience 5
 
 build_image:
-  # Construye y publica las TRES imagenes (api + streaming-consumer +
-  # monitoring -- antes solo existia la de la API y el Deployment del
-  # consumer apuntaba, por error, a esa misma imagen sin streaming/ ni sus
-  # dependencias). El tag es siempre $CI_COMMIT_SHA, nunca "latest": es la
-  # referencia inmutable que el stage "release" fija en el overlay de
-  # Kustomize (`make docker-build`/`docker-push` ya cubren las tres).
+  # Construye y publica las CUATRO imagenes (api + streaming-consumer +
+  # monitoring + mlflow). El tag es siempre $CI_COMMIT_SHA, nunca "latest":
+  # es la referencia inmutable que el stage "release" fija en el overlay de
+  # Kustomize. `make docker-buildx-push` (no docker-build+docker-push): usa
+  # cache remoto de BuildKit en ECR, ver su comentario en el Makefile.
   stage: build
   needs: ["train_model"]
   image: docker:24.0.5
@@ -182,7 +181,12 @@ build_image:
   script:
     - apk add --no-cache make
     - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-    - make docker-build docker-push AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
+    # --driver docker-container (no el driver "docker" default): es el unico
+    # que soporta el exporter de cache "type=registry" que usa
+    # docker-buildx-push (Makefile) -- sin el, --cache-to falla o se ignora
+    # en silencio y cada corrida vuelve a subir la capa de torch entera.
+    - docker buildx create --use --driver docker-container
+    - make docker-buildx-push AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID AWS_REGION=$AWS_REGION IMAGE_TAG=$CI_COMMIT_SHA
 
 release:
   # GitOps, no despliegue imperativo: este job NO habla con el cluster (sin
