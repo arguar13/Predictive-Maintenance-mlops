@@ -22,7 +22,7 @@ GITOPS_OVERLAY := kubernetes/overlays/production
 	test test-api test-core coverage test-integration \
 	security bandit trivy yamllint \
 	precommit-install precommit-run \
-	build-toy-dataset prepare-toy prepare-data train train-toy smoke-test \
+	build-toy-dataset prepare-toy prepare-data train train-toy smoke-test msk-bootstrap-topics \
 	dvc-pull dvc-push dvc-use-localstack \
 	compose-up compose-down compose-destroy compose-logs compose-ps localstack-env \
 	docker-build-api docker-build-consumer docker-build-monitoring docker-build-mlflow docker-build \
@@ -135,6 +135,15 @@ security: bandit trivy ## Ejecuta bandit + trivy (SAST + secretos + vulnerabilid
 
 build-toy-dataset: ## Regenera el dataset toy (~1000 filas, fijo) desde el dataset completo
 	poetry -C $(CORE) run python scripts/build_toy_dataset.py
+
+msk-bootstrap-topics: ## Crea (idempotente) los topics de Kafka; ver docstring del script
+	# terraform/msk.tf provisiona el CLUSTER, nunca los topics (no son un
+	# recurso de AWS, y MSK esta en subnets privadas sin acceso publico desde
+	# donde corre terraform). Correr UNA VEZ por cluster, desde dentro de la
+	# VPC -- localmente contra docker-compose (KAFKA_BROKER=localhost:9092),
+	# o contra el MSK real via `kubectl exec` en cualquier pod de mlops-env
+	# (ya tiene kafka-python-ng y la variable KAFKA_BROKER del ConfigMap).
+	poetry -C $(CORE) run python scripts/bootstrap_kafka_topics.py
 
 prepare-toy: ## Construye engine_features/training_entities/scaler.joblib del dataset toy
 	poetry -C $(CORE) run python src/prepare_feast_data.py --data-dir data_toy
