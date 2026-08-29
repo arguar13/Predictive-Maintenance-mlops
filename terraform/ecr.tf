@@ -17,7 +17,7 @@ resource "aws_ecr_repository" "streaming_repo" {
   # (entorno de curso, no produccion real) -- sin esto, "terraform destroy"
   # falla si el repo tiene alguna imagen publicada, y hay que vaciarlo a mano
   # con la AWS CLI antes de poder destruir.
-  force_delete         = true
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -67,7 +67,7 @@ resource "aws_ecr_repository" "consumer_repo" {
   # (entorno de curso, no produccion real) -- sin esto, "terraform destroy"
   # falla si el repo tiene alguna imagen publicada, y hay que vaciarlo a mano
   # con la AWS CLI antes de poder destruir.
-  force_delete         = true
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -110,7 +110,7 @@ resource "aws_ecr_repository" "monitoring_repo" {
   # (entorno de curso, no produccion real) -- sin esto, "terraform destroy"
   # falla si el repo tiene alguna imagen publicada, y hay que vaciarlo a mano
   # con la AWS CLI antes de poder destruir.
-  force_delete         = true
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true

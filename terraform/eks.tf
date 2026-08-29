@@ -1,7 +1,18 @@
 module "eks" {
-  source          = "terraform-aws-modules/eks/aws"
-  version         = "~> 20.0"
-  cluster_name    = "mlops-cluster"
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.0"
+  # "mlops-cluster" (nombre generico, sin el prefijo var.project_name que usa
+  # el resto de los recursos de este proyecto -- RDS, S3, MSK, ECR, KMS)
+  # colisiono con otro proyecto de la misma cuenta AWS que sigue una
+  # plantilla de curso similar: su `aws eks update-kubeconfig --name
+  # mlops-cluster` se conecto a ESTE cluster (ya existente) en vez de crear
+  # uno propio, y su ArgoCD borro el namespace "argocd" (incluida la
+  # Application de este proyecto) al instalarse pensando que el cluster
+  # estaba vacio. var.project_name (unico) sin sufijo "-cluster" adicional:
+  # el modulo ya agrega su propio sufijo "-cluster-" al name_prefix del rol
+  # IAM del cluster, con un limite de 38 caracteres -- "${var.project_name}-
+  # cluster" + ese sufijo interno lo supera.
+  cluster_name    = var.project_name
   cluster_version = var.cluster_version # Toma el valor 1.36 de variables.tf
   vpc_id          = module.vpc.vpc_id
   subnet_ids      = module.vpc.private_subnets
