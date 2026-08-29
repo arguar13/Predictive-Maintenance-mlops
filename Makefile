@@ -250,28 +250,37 @@ docker-push: docker-push-api docker-push-consumer docker-push-monitoring docker-
 # para desarrollo local, donde Docker Desktop ya cachea capas entre builds
 # y este problema no existe.
 
+# Un UNICO tag de cache compartido entre las 4 imagenes (no uno por imagen):
+# api y streaming-consumer instalan la MISMA rueda pesada de torch+CPU (ver
+# api/pyproject.toml y core_ml/pyproject.toml, ambos alineados a la misma
+# version); con cache separado por imagen, esa capa se resubia dos veces en
+# el registro de cache en vez de una. BuildKit reutiliza una capa cacheada
+# entre Dockerfiles distintos con normalidad: lo que importa es que la
+# instruccion y sus inputs coincidan exactamente, no que sea "la misma
+# imagen". Los 4 builds corren secuenciales (ver target docker-buildx-push
+# mas abajo), asi que no hay condicion de carrera escribiendo el mismo tag.
 docker-buildx-push-api: ## Build+push de la API con cache remoto de BuildKit (CI)
 	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):api \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):api,mode=max \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
 		-t $(API_IMAGE):$(IMAGE_TAG) -f Dockerfile .
 
 docker-buildx-push-consumer: ## Build+push del streaming-consumer con cache remoto de BuildKit (CI)
 	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):consumer \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):consumer,mode=max \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
 		-t $(CONSUMER_IMAGE):$(IMAGE_TAG) -f core_ml/Dockerfile .
 
 docker-buildx-push-monitoring: ## Build+push de monitoring con cache remoto de BuildKit (CI)
 	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):monitoring \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):monitoring,mode=max \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
 		-t $(MONITORING_IMAGE):$(IMAGE_TAG) -f monitoring/Dockerfile .
 
 docker-buildx-push-mlflow: ## Build+push de MLflow con cache remoto de BuildKit (CI)
 	docker buildx build --push \
-		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):mlflow \
-		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):mlflow,mode=max \
+		--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
+		--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared,mode=max \
 		-t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow .
 
 docker-buildx-push: docker-buildx-push-api docker-buildx-push-consumer docker-buildx-push-monitoring docker-buildx-push-mlflow ## Build+push de las 4 imagenes con cache remoto (usado por build_image en CI)

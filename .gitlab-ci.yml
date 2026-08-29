@@ -163,6 +163,13 @@ build_image:
   # cache remoto de BuildKit en ECR, ver su comentario en el Makefile.
   stage: build
   needs: ["train_model"]
+  # Sobrescribe el timeout default del proyecto (1h) solo para este job: la
+  # primera corrida con el cache remoto de BuildKit todavia en frio (nada
+  # cacheado aun) tiene que subir la capa de torch para las 4 imagenes por
+  # primera vez contra un ancho de banda de subida domestico limitado.
+  # Corridas siguientes, con el cache ya poblado (ver Makefile,
+  # docker-buildx-push-*), deberian terminar en minutos.
+  timeout: 2h
   image: docker:24.0.5
   services:
     - docker:24.0.5-dind

@@ -28,7 +28,13 @@ mlflow = "^3.15.1"
 # un pickle de un nn.Module producido por torch 2.13 no tiene garantia de
 # cargar en el 2.2.0 que habia pineado aqui. Ademas 2.2.0 arrastra
 # CVE-2025-32434 (CRITICAL: RCE en torch.load), corregida en 2.6.0.
-torch = "^2.13.0"
+# Rueda CPU-only (ver [[tool.poetry.source]] "pytorch-cpu" mas abajo): la API
+# solo hace inferencia (nunca entrena), sin llamadas a CUDA. La rueda de PyPI
+# arrastraba ~2GB de paquetes nvidia-* nunca usados -- ese peso, duplicado en
+# la imagen del streaming-consumer (mismo torch, core_ml/pyproject.toml), fue
+# la causa real de que el job build_image de .gitlab-ci.yml se quedara sin
+# ancho de banda de subida y excediera el timeout de 1h del job.
+torch = { version = "^2.13.0", source = "pytorch-cpu" }
 # numpy: antes "<2.0.0", incompatible con el ">=2.0.0" de core_ml. Dos
 # proyectos que intercambian arrays y un scaler de scikit-learn por pickle
 # no pueden estar en majors distintos de numpy.
@@ -72,6 +78,11 @@ bandit = "^1.7.10"
 # API sirve de verdad desde un MLflow Model Registry real, no un sqlite.
 testcontainers = {extras = ["postgres"], version = "4.15.0"}
 psycopg2-binary = "^2.9.9"
+
+[[tool.poetry.source]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core"]
