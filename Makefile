@@ -317,14 +317,19 @@ docker-buildx-push-monitoring: ## Build+push de monitoring con cache remoto de B
 			-t $(MONITORING_IMAGE):$(IMAGE_TAG) -f monitoring/Dockerfile . ; \
 	fi
 
-docker-buildx-push-mlflow: ## Build+push de MLflow con cache remoto de BuildKit (CI)
+# SIN --cache-from/--cache-to: a diferencia de api/consumer/monitoring
+# (las 3 sobre python:3.12-slim + poetry, compartiendo la capa pesada de
+# torch), esta imagen parte de `ghcr.io/mlflow/mlflow` -- no comparte NINGUNA
+# capa con las otras 3, asi que exportar cache aqui no ahorra nada en el
+# futuro y solo agregaba una subida extra de varios cientos de MB, siendo
+# ademas la que mas se atascaba contra la red domestica inestable del
+# runner (ver comentario de resiliencia mas arriba). El build en si ya es
+# rapido (imagen base chica, sin poetry install pesado de por medio).
+docker-buildx-push-mlflow: ## Build+push de MLflow (sin cache remoto: no comparte capas con las otras 3 imagenes)
 	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-mlflow --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
 		echo "predictive-maintenance-mlops-mlflow:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
 	else \
-		docker buildx build --push \
-			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			-t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow . ; \
+		docker buildx build --push -t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow . ; \
 	fi
 
 docker-buildx-push: docker-buildx-push-api docker-buildx-push-consumer docker-buildx-push-monitoring docker-buildx-push-mlflow ## Build+push de las 4 imagenes con cache remoto (usado por build_image en CI)
