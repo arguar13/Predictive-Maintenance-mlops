@@ -2,11 +2,6 @@ project:
   name: "predictive_maintenance_turbofan"
   version: "2.0.0"
 
-kafka:
-  broker: "${KAFKA_BROKER}"  # Inyectado por K8s ConfigMap
-  telemetry_topic: "engine_telemetry"
-  alert_topic: "engine_alerts"
-
 model:
   window_size: 30
   # 24 = sensores + operating settings que sobreviven clean_and_prepare()
@@ -19,17 +14,12 @@ model:
   # produccion contra el dataset completo (confirmado via GET /health:
   # {"num_features": 24} del modelo champion real). api/main.py ya no
   # depende de este valor (infiere la forma real desde el scaler del
-  # modelo servido); pero evidently_service.py y
-  # core_ml/streaming/producer_sim.py si lo usan directamente, y deben
-  # coincidir con el modelo real para no descartar cada ventana con
-  # "unexpected_window_shape" / "no_online_features".
+  # modelo servido, ver api/main.py::_infer_window_shape).
   num_features: 24
   mlflow_tracking_uri: "${MLFLOW_TRACKING_URI}"  # Inyectado por K8s
   model_name: "Turbofan_FCN"
 
 monitoring:
-  prometheus_port: 8000
-  drift_threshold: 0.05
   # Quality gate: reemplaza un umbral de accuracy plano. RUL tiene 3 clases
   # desbalanceadas (Healthy/Alert/Critical) con costo asimetrico -- un falso
   # negativo de "Critical" (el modelo dice Healthy/Alert de un motor que en

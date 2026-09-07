@@ -16,12 +16,6 @@ class ProjectConfig(BaseModel):
     version: str = Field(min_length=1)
 
 
-class KafkaConfig(BaseModel):
-    broker: str = Field(min_length=1)
-    telemetry_topic: str = Field(min_length=1)
-    alert_topic: str = Field(min_length=1)
-
-
 class ModelConfig(BaseModel):
     window_size: int = Field(gt=0)
     num_features: int = Field(gt=0)
@@ -30,8 +24,6 @@ class ModelConfig(BaseModel):
 
 
 class MonitoringConfig(BaseModel):
-    prometheus_port: int = Field(gt=0, lt=65536)
-    drift_threshold: float = Field(ge=0, le=1)
     # Quality Gate: un modelo recién entrenado solo se promueve en el Model
     # Registry de MLflow (alias "champion") si supera AMBOS umbrales -
     # ver train.py::_evaluate_quality_gate para el porqué (accuracy plano
@@ -42,6 +34,5 @@ class MonitoringConfig(BaseModel):
 
 class AppConfig(BaseModel):
     project: ProjectConfig
-    kafka: KafkaConfig
     model: ModelConfig
     monitoring: MonitoringConfig

@@ -53,35 +53,3 @@ variable "gitlab_project_path" {
   description = "namespace/proyecto de GitLab que puede asumir GitLabCIRole (claim 'sub' del id_token). Ajustar al proyecto real antes de aplicar."
   default     = "personal-group7745334/predictive-maintenance-mlops"
 }
-
-# ------------------------------------------------------------------
-# Amazon MSK (terraform/msk.tf)
-# ------------------------------------------------------------------
-variable "msk_kafka_version" {
-  type    = string
-  default = "3.6.0"
-}
-
-variable "msk_instance_type" {
-  type    = string
-  default = "kafka.t3.small"
-}
-
-variable "msk_ebs_volume_size" {
-  type        = number
-  description = "GiB de EBS por broker"
-  default     = 20
-}
-
-# ------------------------------------------------------------------
-# ElastiCache Redis (terraform/elasticache.tf) -- Feast Online Store
-# ------------------------------------------------------------------
-variable "redis_engine_version" {
-  type    = string
-  default = "7.1"
-}
-
-variable "redis_node_type" {
-  type    = string
-  default = "cache.t3.micro"
-}

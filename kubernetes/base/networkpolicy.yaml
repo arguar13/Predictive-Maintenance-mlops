@@ -2,11 +2,9 @@
 # NetworkPolicy, cualquier pod del namespace puede hablarle a cualquier
 # otro sin restriccion -- una API comprometida podria alcanzar mlflow (y
 # por extension RDS/S3) igual de facil que un cliente legitimo. Alcance
-# deliberadamente limitado a los dos workloads que sobreviven a este
-# proyecto (api, mlflow): streaming-consumer/evidently/feast-materialize
-# se eliminan por completo en el siguiente cambio (se quita todo el
-# streaming Kafka de este proyecto), asi que escribirles NetworkPolicy
-# ahora seria proteger codigo que no va a seguir existiendo.
+# limitado a los dos workloads que quedan en este proyecto (api, mlflow):
+# streaming-consumer/evidently/feast-materialize ya no existen (se quito
+# todo el streaming Kafka de este proyecto).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

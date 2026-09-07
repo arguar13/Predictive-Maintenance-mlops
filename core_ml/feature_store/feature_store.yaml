@@ -8,10 +8,7 @@ provider: aws
 offline_store:
   type: file   # sin "path"
 
-online_store:
-  type: redis
-  # ${REDIS_CONNECTION_STRING}: inyectada via kubernetes/base/configmap.yaml
-  # (terraform/elasticache.tf -> output redis_connection_string) en EKS, y
-  # "localhost:6379" (docker-compose.yml) en local -- Feast expande
-  # variables de entorno con esta sintaxis de forma nativa.
-  connection_string: "${REDIS_CONNECTION_STRING}"
+# Sin online_store: no hay streaming (core_ml/streaming/ fue eliminado) ni
+# nada que materialice o sirva features en tiempo real -- ver
+# features.py::engine_window_fv (online=False). Solo se usa
+# get_historical_features (Offline Store) para entrenamiento.

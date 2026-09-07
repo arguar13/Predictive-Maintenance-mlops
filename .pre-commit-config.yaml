@@ -98,35 +98,35 @@ repos:
         name: "core_ml · ruff (lint)"
         entry: poetry -C core_ml run ruff check --fix
         language: system
-        files: ^core_ml/(src|streaming|feature_store|scripts|tests)/.*\.py$
+        files: ^core_ml/(src|feature_store|scripts|tests)/.*\.py$
         pass_filenames: false
 
       - id: core-ml-isort
         name: "core_ml · isort (orden de imports)"
         entry: poetry -C core_ml run isort .
         language: system
-        files: ^core_ml/(src|streaming|feature_store|scripts|tests)/.*\.py$
+        files: ^core_ml/(src|feature_store|scripts|tests)/.*\.py$
         pass_filenames: false
 
       - id: core-ml-black
         name: "core_ml · black (formato)"
         entry: poetry -C core_ml run black .
         language: system
-        files: ^core_ml/(src|streaming|feature_store|scripts|tests)/.*\.py$
+        files: ^core_ml/(src|feature_store|scripts|tests)/.*\.py$
         pass_filenames: false
 
       - id: core-ml-mypy
         name: "core_ml · mypy (type checking)"
-        entry: poetry -C core_ml run mypy src streaming feature_store
+        entry: poetry -C core_ml run mypy src feature_store
         language: system
-        files: ^core_ml/(src|streaming|feature_store)/.*\.py$
+        files: ^core_ml/(src|feature_store)/.*\.py$
         pass_filenames: false
 
       - id: core-ml-bandit
         name: "core_ml · bandit (seguridad)"
-        entry: poetry -C core_ml run bandit -q -r src streaming feature_store
+        entry: poetry -C core_ml run bandit -q -r src feature_store
         language: system
-        files: ^core_ml/(src|streaming|feature_store)/.*\.py$
+        files: ^core_ml/(src|feature_store)/.*\.py$
         pass_filenames: false
 
       - id: core-ml-pytest

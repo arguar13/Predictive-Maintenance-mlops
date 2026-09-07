@@ -10,23 +10,6 @@ resources:
   - api.yaml
   - networkpolicy.yaml
   - hpa.yaml
-  - streaming-consumer.yaml
-  - feast-materialize-cronjob.yaml
-  - evidently.yaml
-  - prometheus.yaml
-  - grafana.yaml
-
-# Genera el ConfigMap de Prometheus a partir de prometheus.yml (una sola
-# fuente de verdad) en vez de duplicar su contenido a mano en un manifiesto
-# de Kubernetes. El sufijo hash se propaga automaticamente a prometheus.yaml
-# (volumes.configMap.name) y fuerza un rollout si cambia. El archivo vive
-# dentro de este directorio porque Kustomize no permite (por seguridad)
-# referenciar archivos fuera de la raiz de la kustomization.
-configMapGenerator:
-  - name: prometheus-config
-    namespace: mlops-env
-    files:
-      - prometheus.yml
 
 labels:
   - pairs:

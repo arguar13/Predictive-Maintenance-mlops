@@ -30,10 +30,9 @@ mlflow = "^3.15.1"
 # CVE-2025-32434 (CRITICAL: RCE en torch.load), corregida en 2.6.0.
 # Rueda CPU-only (ver [[tool.poetry.source]] "pytorch-cpu" mas abajo): la API
 # solo hace inferencia (nunca entrena), sin llamadas a CUDA. La rueda de PyPI
-# arrastraba ~2GB de paquetes nvidia-* nunca usados -- ese peso, duplicado en
-# la imagen del streaming-consumer (mismo torch, core_ml/pyproject.toml), fue
-# la causa real de que el job build_image de .gitlab-ci.yml se quedara sin
-# ancho de banda de subida y excediera el timeout de 1h del job.
+# arrastraba ~2GB de paquetes nvidia-* nunca usados -- ese peso fue la causa
+# real de que el job build_image de .gitlab-ci.yml se quedara sin ancho de
+# banda de subida y excediera el timeout de 1h del job.
 torch = { version = "^2.13.0", source = "pytorch-cpu" }
 # numpy: antes "<2.0.0", incompatible con el ">=2.0.0" de core_ml. Dos
 # proyectos que intercambian arrays y un scaler de scikit-learn por pickle

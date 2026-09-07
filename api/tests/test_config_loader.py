@@ -4,25 +4,17 @@ from pydantic import ValidationError
 from config_loader import load_config
 
 
-def _valid_config_text(
-    broker: str = "kafka:9092", mlflow_uri: str = "http://localhost:5000"
-) -> str:
+def _valid_config_text(mlflow_uri: str = "http://localhost:5000") -> str:
     return f"""
 project:
   name: "predictive_maintenance_turbofan"
   version: "2.0.0"
-kafka:
-  broker: "{broker}"
-  telemetry_topic: "engine_telemetry"
-  alert_topic: "engine_alerts"
 model:
   window_size: 30
   num_features: 14
   mlflow_tracking_uri: "{mlflow_uri}"
   model_name: "Turbofan_FCN"
 monitoring:
-  prometheus_port: 8000
-  drift_threshold: 0.05
   f2_weighted_threshold: 0.75
   critical_recall_threshold: 0.75
 """
@@ -30,23 +22,12 @@ monitoring:
 
 def test_load_config_resolves_env_var(tmp_path, monkeypatch):
     config_file = tmp_path / "config.yaml"
-    config_file.write_text(_valid_config_text(broker="${TEST_BROKER}"))
-    monkeypatch.setenv("TEST_BROKER", "kafka:9092")
+    config_file.write_text(_valid_config_text(mlflow_uri="${TEST_MLFLOW_URI}"))
+    monkeypatch.setenv("TEST_MLFLOW_URI", "http://mlflow-test:5000")
 
     config = load_config(config_path=str(config_file))
 
-    assert config["kafka"]["broker"] == "kafka:9092"
-
-
-def test_load_config_uses_local_default_for_known_env_var(tmp_path, monkeypatch):
-    """Una variable CONOCIDA sin definir cae a su default de desarrollo."""
-    config_file = tmp_path / "config.yaml"
-    config_file.write_text(_valid_config_text(broker="${KAFKA_BROKER}"))
-    monkeypatch.delenv("KAFKA_BROKER", raising=False)
-
-    config = load_config(config_path=str(config_file))
-
-    assert config["kafka"]["broker"] == "localhost:9092"
+    assert config["model"]["mlflow_tracking_uri"] == "http://mlflow-test:5000"
 
 
 def test_load_config_default_mlflow_uri_has_a_scheme(tmp_path, monkeypatch):
@@ -76,10 +57,10 @@ def test_load_config_fails_fast_on_unknown_env_var(tmp_path, monkeypatch):
     aparente con su causa.
     """
     config_file = tmp_path / "config.yaml"
-    config_file.write_text(_valid_config_text(broker="${MISSING_KAFKA_VAR}"))
-    monkeypatch.delenv("MISSING_KAFKA_VAR", raising=False)
+    config_file.write_text(_valid_config_text(mlflow_uri="${MISSING_MLFLOW_VAR}"))
+    monkeypatch.delenv("MISSING_MLFLOW_VAR", raising=False)
 
-    with pytest.raises(ValueError, match="MISSING_KAFKA_VAR"):
+    with pytest.raises(ValueError, match="MISSING_MLFLOW_VAR"):
         load_config(config_path=str(config_file))
 
 
@@ -101,13 +82,7 @@ def test_load_config_fails_fast_on_missing_section(tmp_path):
 project:
   name: "predictive_maintenance_turbofan"
   version: "2.0.0"
-kafka:
-  broker: "localhost:9092"
-  telemetry_topic: "engine_telemetry"
-  alert_topic: "engine_alerts"
 monitoring:
-  prometheus_port: 8000
-  drift_threshold: 0.05
   f2_weighted_threshold: 0.75
   critical_recall_threshold: 0.75
 """

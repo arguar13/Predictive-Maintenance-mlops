@@ -23,10 +23,7 @@ _ENV_VAR_PATTERN = re.compile(r"^\$\{([^}^{]+)\}$")
 # que el operador exportase la variable a mano, pese a que README y guia los
 # documentan como comandos autonomos.
 _LOCAL_DEFAULTS = {
-    "KAFKA_BROKER": "localhost:9092",
-    "KAFKA_SECURITY_PROTOCOL": "PLAINTEXT",
     "MLFLOW_TRACKING_URI": "http://localhost:5000",
-    "REDIS_CONNECTION_STRING": "localhost:6379",
 }
 
 
@@ -37,7 +34,7 @@ def _resolve_env_placeholders(value: Any) -> Any:
     sustitución funcione sin importar si el valor estaba citado o no en el
     YAML de origen: PyYAML nunca aplica resolvers implícitos a scalars
     citados, por lo que un enfoque basado en `add_implicit_resolver` nunca
-    llega a dispararse para valores como `broker: "${KAFKA_BROKER}"`.
+    llega a dispararse para valores como `mlflow_tracking_uri: "${MLFLOW_TRACKING_URI}"`.
     """
     if isinstance(value, dict):
         return {key: _resolve_env_placeholders(val) for key, val in value.items()}

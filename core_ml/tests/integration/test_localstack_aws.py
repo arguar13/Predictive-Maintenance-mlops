@@ -1,6 +1,6 @@
-"""Integración End-to-End: la aplicación habla con "AWS" (S3, SQS,
-Secrets Manager) contra LocalStack — infraestructura simulada, sin tocar
-recursos reales ni consumir cuota de AWS.
+"""Integración End-to-End: la aplicación habla con "AWS" (S3, Secrets
+Manager) contra LocalStack — infraestructura simulada, sin tocar recursos
+reales ni consumir cuota de AWS.
 
 Fase 3 ("la falsa nube"). Requiere Docker.
 
@@ -23,7 +23,7 @@ def localstack_container():
     from testcontainers.community.localstack import LocalStackContainer
 
     with LocalStackContainer(image="localstack/localstack:3.8").with_services(
-        "s3", "sqs", "secretsmanager"
+        "s3", "secretsmanager"
     ) as container:
         yield container
 
@@ -40,7 +40,6 @@ def aws_clients(localstack_container):
     )
     return {
         "s3": session.client("s3", endpoint_url=endpoint_url),
-        "sqs": session.client("sqs", endpoint_url=endpoint_url),
         "secretsmanager": session.client("secretsmanager", endpoint_url=endpoint_url),
     }
 
@@ -59,18 +58,6 @@ def test_s3_bucket_roundtrip_mirrors_the_feast_offline_store_path(aws_clients):
 
     listing = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix="feast/")
     assert any(item["Key"] == key for item in listing.get("Contents", []))
-
-
-def test_sqs_queue_roundtrip_for_alert_dead_lettering(aws_clients):
-    sqs = aws_clients["sqs"]
-    queue_url = sqs.create_queue(QueueName="engine-alerts-dlq")["QueueUrl"]
-
-    message_body = '{"engine_id": "ENG_001", "status": "Critical"}'
-    sqs.send_message(QueueUrl=queue_url, MessageBody=message_body)
-
-    messages = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1, WaitTimeSeconds=5)
-    assert len(messages.get("Messages", [])) == 1
-    assert "ENG_001" in messages["Messages"][0]["Body"]
 
 
 def test_secrets_manager_stores_and_retrieves_db_credentials(aws_clients):

@@ -18,8 +18,7 @@ def configure_logging(service_name: str) -> structlog.stdlib.BoundLogger:
     """Configura structlog para emitir un objeto JSON por línea a stdout.
 
     `LOG_LEVEL` (env var, por defecto "INFO") controla el nivel mínimo.
-    Se llama una vez al arrancar el proceso (api/main.py,
-    streaming/kafka_consumer.py, src/train.py).
+    Se llama una vez al arrancar el proceso (api/main.py, src/train.py).
     """
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)

@@ -158,11 +158,11 @@ train_model:
     - poetry run python src/train.py --data-dir data --data-source feast --epochs 25 --patience 5
 
 build_image:
-  # Construye y publica las CUATRO imagenes (api + streaming-consumer +
-  # monitoring + mlflow). El tag es siempre $CI_COMMIT_SHA, nunca "latest":
-  # es la referencia inmutable que el stage "release" fija en el overlay de
-  # Kustomize. `make docker-buildx-push` (no docker-build+docker-push): usa
-  # cache remoto de BuildKit en ECR, ver su comentario en el Makefile.
+  # Construye y publica las imagenes (api + mlflow). El tag es siempre
+  # $CI_COMMIT_SHA, nunca "latest": es la referencia inmutable que el stage
+  # "release" fija en el overlay de Kustomize. `make docker-buildx-push`
+  # (no docker-build+docker-push): usa cache remoto de BuildKit en ECR, ver
+  # su comentario en el Makefile.
   #
   # SIN servicio dind (cambio de arquitectura): antes este job usaba
   # `services: docker:24.0.5-dind`, un daemon Docker EFIMERO por job -- cada

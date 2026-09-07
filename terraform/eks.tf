@@ -2,8 +2,8 @@ module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 20.0"
   # "mlops-cluster" (nombre generico, sin el prefijo var.project_name que usa
-  # el resto de los recursos de este proyecto -- RDS, S3, MSK, ECR, KMS)
-  # colisiono con otro proyecto de la misma cuenta AWS que sigue una
+  # el resto de los recursos de este proyecto -- RDS, S3, ECR, KMS) colisiono
+  # con otro proyecto de la misma cuenta AWS que sigue una
   # plantilla de curso similar: su `aws eks update-kubeconfig --name
   # mlops-cluster` se conecto a ESTE cluster (ya existente) en vez de crear
   # uno propio, y su ArgoCD borro el namespace "argocd" (incluida la

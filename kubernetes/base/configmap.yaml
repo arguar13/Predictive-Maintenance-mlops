@@ -1,20 +1,12 @@
 # Valores no sensibles. Los que dependen de recursos AWS provisionados por
-# Terraform (KAFKA_BROKER, DB_HOST, REDIS_CONNECTION_STRING) se completan
-# con `terraform output` tras el apply -- ver kubernetes/overlays/production
-# para el patch que los sobreescribe por entorno (nunca con sed).
+# Terraform (DB_HOST) se completan con `terraform output` tras el apply --
+# ver kubernetes/overlays/production para el patch que los sobreescribe por
+# entorno (nunca con sed).
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mlops-config
   namespace: mlops-env
 data:
-  # `terraform output msk_bootstrap_brokers` -> listener TLS de MSK (9094).
-  KAFKA_BROKER: "b-1.predictivemaintenancem.9o7en5.c9.kafka.us-east-1.amazonaws.com:9094,b-2.predictivemaintenancem.9o7en5.c9.kafka.us-east-1.amazonaws.com:9094"
-  # MSK esta provisionado con encryption_in_transit.client_broker = "TLS"
-  # (terraform/msk.tf). Los clientes de kafka-python deben hablar SSL o la
-  # conexion sencillamente expira. En local (docker-compose) esta variable no
-  # se define y core_ml/streaming/kafka_security.py cae a PLAINTEXT.
-  KAFKA_SECURITY_PROTOCOL: "SSL"
   MLFLOW_TRACKING_URI: "http://mlflow:5000"
   DB_HOST: "predictive-maintenance-mlops-backend-db.cctqc6mqgk83.us-east-1.rds.amazonaws.com"
-  REDIS_CONNECTION_STRING: "predictive-maintenance-mlops-feast-redis.jkw5ev.0001.use1.cache.amazonaws.com:6379"
