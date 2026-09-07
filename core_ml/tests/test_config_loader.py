@@ -22,7 +22,8 @@ model:
 monitoring:
   prometheus_port: 8000
   drift_threshold: 0.05
-  accuracy_threshold: 0.85
+  f2_weighted_threshold: 0.75
+  critical_recall_threshold: 0.75
 """
 
 

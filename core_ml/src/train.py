@@ -17,7 +17,10 @@ Modos de carga de datos (--data-source):
 El modelo y el scaler NUNCA quedan como archivos sueltos: el modelo se
 registra en el MLflow Model Registry y el scaler se loguea como artefacto
 del mismo run. Solo se promueve al alias "champion" (el que sirve la API)
-si supera el Quality Gate (`monitoring.accuracy_threshold` en config.yaml).
+si supera el Quality Gate: F2 ponderado Y recall de la clase Critical, cada
+uno contra su propio umbral en `monitoring.*` de config.yaml (ver
+`_evaluate_quality_gate`) - no un accuracy plano, ciego al costo asimetrico
+de confundir un motor "Critical" con "Healthy"/"Alert".
 """
 
 from __future__ import annotations
@@ -39,7 +42,9 @@ import torch.nn as nn
 import torch.optim as optim
 import yaml
 from mlflow import MlflowClient
+from sklearn.metrics import fbeta_score, recall_score
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, TensorDataset
 
 from config_loader import load_config
@@ -51,6 +56,10 @@ log = configure_logging("train")
 BASE_DIR = Path(__file__).resolve().parent.parent
 WINDOW_SIZE = 30
 NUM_CLASSES = 3
+# 0=Healthy, 1=Alert, 2=Critical (ver data_processing.py::build_multiclass_target).
+# El costo de un falso negativo aqui (decir Healthy/Alert de un motor que en
+# realidad esta Critical) es el que justifica todo el quality gate de abajo.
+CRITICAL_CLASS_INDEX = 2
 
 
 class PositionalEncoding(nn.Module):
@@ -270,6 +279,26 @@ def _split_by_engine(
     return X[train_idx], X[val_idx], y[train_idx], y[val_idx]
 
 
+def _evaluate_quality_gate(
+    f2_weighted: float,
+    critical_recall: float,
+    f2_threshold: float,
+    critical_recall_threshold: float,
+) -> bool:
+    """Ambos umbrales tienen que pasar, no uno u otro.
+
+    F2 pondera el recall el doble que la precision sobre las 3 clases, asi
+    que ya favorece detectar Critical por encima de un accuracy plano. Pero
+    un modelo puede tener buen F2 global compensando con buen desempeño en
+    Healthy/Alert (las clases mayoritarias) mientras falla sistematicamente
+    en Critical -- justo la clase que mas importa -- y seguir pasando un
+    umbral de F2 solo. critical_recall_threshold es el piso duro que cierra
+    ese hueco: sin el, el gate podria promover exactamente el tipo de
+    modelo que este cambio existe para rechazar.
+    """
+    return f2_weighted >= f2_threshold and critical_recall >= critical_recall_threshold
+
+
 def train_pipeline(
     data_dir: str = "data",
     data_source: str = "feast",
@@ -343,11 +372,22 @@ def train_pipeline(
     )
 
     model = ConvTransformer(num_features=num_features, num_classes=NUM_CLASSES)
-    criterion = nn.CrossEntropyLoss()
+    # Pesos de clase "balanced" (inversos a la frecuencia en y_train, no un
+    # valor fijo adivinado): RUL esta dominado por Healthy, y sin ponderar
+    # la loss el gradiente apenas "ve" Critical durante el entrenamiento -
+    # el modelo puede converger a un minimo que ignora la clase que mas
+    # importa y aun asi reportar accuracy alto. Se calcula sobre y_train
+    # (nunca sobre y_val) para no filtrar informacion de validation al
+    # entrenamiento.
+    class_weights = compute_class_weight(
+        class_weight="balanced", classes=np.arange(NUM_CLASSES), y=y_train
+    )
+    criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float32))
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     lineage_tags = _build_lineage_tags(data_dir, data_source)
-    accuracy_threshold = config["monitoring"]["accuracy_threshold"]
+    f2_threshold = config["monitoring"]["f2_weighted_threshold"]
+    critical_recall_threshold = config["monitoring"]["critical_recall_threshold"]
 
     with mlflow.start_run(run_name=f"ConvTransformer_Training_{data_source}") as run:
         mlflow.set_tags(lineage_tags)
@@ -365,22 +405,26 @@ def train_pipeline(
             }
         )
 
-        # Selecciona el mejor checkpoint por val_accuracy en vez de asumir que
-        # el ultimo epoch es el mejor: con el dataset completo (mucho mas
-        # solapamiento entre ventanas deslizantes que en el toy dataset) se
-        # observo val_accuracy colapsando por overfitting bien entrado el
-        # entrenamiento (epoch 20: train_loss bajando a 0.21 pero
-        # val_accuracy cayendo a 0.18, peor que adivinar al azar) mientras
-        # una epoch intermedia generalizaba mejor. Sin esto, subir "epochs"
-        # para dejar converger al modelo es una apuesta: puede terminar
-        # exactamente en un pico malo. Es el equivalente a early stopping
+        # Selecciona el mejor checkpoint por F2 ponderado (la misma metrica
+        # que decide el quality gate mas abajo), no por val_accuracy ni por
+        # asumir que el ultimo epoch es el mejor: con el dataset completo
+        # (mucho mas solapamiento entre ventanas deslizantes que en el toy
+        # dataset) se observo val_accuracy colapsando por overfitting bien
+        # entrado el entrenamiento (epoch 20: train_loss bajando a 0.21 pero
+        # accuracy cayendo a 0.18, peor que adivinar al azar) mientras una
+        # epoch intermedia generalizaba mejor. Elegir el checkpoint por una
+        # metrica y gatear la promocion por otra distinta abriria la puerta
+        # a promover el mejor-por-accuracy aunque no sea el mejor-por-F2 que
+        # el gate en realidad exige. Es el equivalente a early stopping
         # sobre el mejor checkpoint, no una forma de forzar el quality gate.
         # Early stopping (patience): "epochs" es un TECHO, no un objetivo --
         # con ConvTransformer casi siempre converge mucho antes. Cortar en
-        # cuanto `patience` epochs seguidos no mejoran val_accuracy ahorra
-        # computo real sin arriesgar nada (el checkpoint restaurado sigue
-        # siendo siempre el de mejor val_accuracy, nunca el ultimo).
+        # cuanto `patience` epochs seguidos no mejoran F2 ahorra computo
+        # real sin arriesgar nada (el checkpoint restaurado sigue siendo
+        # siempre el de mejor F2, nunca el ultimo).
+        best_f2_weighted = -1.0
         best_val_accuracy = -1.0
+        best_critical_recall = -1.0
         best_state_dict: dict[str, torch.Tensor] | None = None
         epochs_without_improvement = 0
 
@@ -401,9 +445,27 @@ def train_pipeline(
             model.eval()
             with torch.no_grad():
                 val_outputs = model(X_val_tensor)
-                val_predictions = torch.argmax(val_outputs, dim=1)
-                epoch_val_accuracy = (val_predictions == y_val_tensor).float().mean().item()
+                val_predictions = torch.argmax(val_outputs, dim=1).numpy()
+            val_targets = y_val_tensor.numpy()
+
+            epoch_val_accuracy = float((val_predictions == val_targets).mean())
+            epoch_f2_weighted = float(
+                fbeta_score(
+                    val_targets, val_predictions, beta=2, average="weighted", zero_division=0
+                )
+            )
+            epoch_critical_recall = float(
+                recall_score(
+                    val_targets,
+                    val_predictions,
+                    average=None,
+                    labels=np.arange(NUM_CLASSES),
+                    zero_division=0,
+                )[CRITICAL_CLASS_INDEX]
+            )
             mlflow.log_metric("val_accuracy", epoch_val_accuracy, step=epoch)
+            mlflow.log_metric("val_f2_weighted", epoch_f2_weighted, step=epoch)
+            mlflow.log_metric("val_critical_recall", epoch_critical_recall, step=epoch)
 
             log.info(
                 "epoch_completed",
@@ -411,10 +473,14 @@ def train_pipeline(
                 total_epochs=epochs,
                 train_loss=avg_loss,
                 val_accuracy=epoch_val_accuracy,
+                val_f2_weighted=epoch_f2_weighted,
+                val_critical_recall=epoch_critical_recall,
             )
 
-            if epoch_val_accuracy > best_val_accuracy:
+            if epoch_f2_weighted > best_f2_weighted:
+                best_f2_weighted = epoch_f2_weighted
                 best_val_accuracy = epoch_val_accuracy
+                best_critical_recall = epoch_critical_recall
                 best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
                 epochs_without_improvement = 0
             else:
@@ -424,7 +490,7 @@ def train_pipeline(
                         "early_stopping",
                         epoch=epoch + 1,
                         patience=patience,
-                        best_val_accuracy=best_val_accuracy,
+                        best_f2_weighted=best_f2_weighted,
                     )
                     break
 
@@ -439,9 +505,16 @@ def train_pipeline(
             )
         model.load_state_dict(best_state_dict)
         val_accuracy = best_val_accuracy
+        f2_weighted = best_f2_weighted
+        critical_recall = best_critical_recall
 
         log.info(
-            "validation_completed", val_accuracy=val_accuracy, accuracy_threshold=accuracy_threshold
+            "validation_completed",
+            val_accuracy=val_accuracy,
+            f2_weighted=f2_weighted,
+            critical_recall=critical_recall,
+            f2_threshold=f2_threshold,
+            critical_recall_threshold=critical_recall_threshold,
         )
 
         example_input = X_train_tensor[:1]
@@ -469,9 +542,12 @@ def train_pipeline(
         else:
             log.warning("scaler_not_found", scaler_path=str(scaler_path))
 
-        quality_gate_passed = val_accuracy >= accuracy_threshold
+        quality_gate_passed = _evaluate_quality_gate(
+            f2_weighted, critical_recall, f2_threshold, critical_recall_threshold
+        )
         mlflow.set_tag("quality_gate_passed", str(quality_gate_passed))
-        mlflow.set_tag("quality_gate_threshold", str(accuracy_threshold))
+        mlflow.set_tag("quality_gate_f2_threshold", str(f2_threshold))
+        mlflow.set_tag("quality_gate_critical_recall_threshold", str(critical_recall_threshold))
 
         run_id = run.info.run_id
         log.info("lineage_tuple", mlflow_run_id=run_id, **lineage_tags)
@@ -486,7 +562,8 @@ def train_pipeline(
             log.info(
                 "quality_gate_passed",
                 val_accuracy=val_accuracy,
-                accuracy_threshold=accuracy_threshold,
+                f2_weighted=f2_weighted,
+                critical_recall=critical_recall,
                 promoted_version=model_info.registered_model_version,
                 alias="champion",
             )
@@ -494,13 +571,17 @@ def train_pipeline(
             log.warning(
                 "quality_gate_failed",
                 val_accuracy=val_accuracy,
-                accuracy_threshold=accuracy_threshold,
+                f2_weighted=f2_weighted,
+                critical_recall=critical_recall,
+                f2_threshold=f2_threshold,
+                critical_recall_threshold=critical_recall_threshold,
             )
 
     if enforce_quality_gate and not quality_gate_passed:
         raise SystemExit(
-            f"Quality gate fallido: val_accuracy={val_accuracy:.4f} < "
-            f"umbral={accuracy_threshold}. No se avanza (revisa datos/hiperparámetros)."
+            f"Quality gate fallido: f2_weighted={f2_weighted:.4f} (umbral={f2_threshold}), "
+            f"critical_recall={critical_recall:.4f} (umbral={critical_recall_threshold}). "
+            "No se avanza (revisa datos/hiperparámetros)."
         )
 
     return run_id

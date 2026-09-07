@@ -30,4 +30,15 @@ model:
 monitoring:
   prometheus_port: 8000
   drift_threshold: 0.05
-  accuracy_threshold: 0.85
+  # Quality gate: reemplaza un umbral de accuracy plano. RUL tiene 3 clases
+  # desbalanceadas (Healthy/Alert/Critical) con costo asimetrico -- un falso
+  # negativo de "Critical" (el modelo dice Healthy/Alert de un motor que en
+  # realidad esta a punto de fallar) es mucho mas caro que un falso
+  # positivo -- asi que el gate no puede ser ciego a esa asimetria. F2
+  # pondera el recall el doble que la precision sobre las 3 clases;
+  # critical_recall_threshold es un piso duro INDEPENDIENTE sobre la clase
+  # Critical especificamente: un modelo puede tener buen F2 global y aun asi
+  # fallar sistematicamente en detectar justo el caso que mas importa, y el
+  # gate debe rechazarlo igual.
+  f2_weighted_threshold: 0.75
+  critical_recall_threshold: 0.75

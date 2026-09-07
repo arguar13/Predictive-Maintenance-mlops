@@ -1,6 +1,6 @@
 import numpy as np
 
-from train import _split_by_engine
+from train import _evaluate_quality_gate, _split_by_engine
 
 
 def _fake_windows(
@@ -63,3 +63,25 @@ def test_split_by_engine_falls_back_to_using_everything_below_two_engines():
     # tiraria ("el train set quedaria vacio").
     assert len(X_train) == len(X_val) == len(X)
     np.testing.assert_array_equal(y_train, y_val)
+
+
+def test_quality_gate_requires_both_thresholds_to_pass():
+    # Buen F2 global, mal recall en Critical: el gate no debe pasar aunque
+    # F2 solo sí lo haría - es exactamente el caso que critical_recall_threshold
+    # existe para atrapar (un modelo que compensa fallando en la clase que
+    # mas importa).
+    assert not _evaluate_quality_gate(
+        f2_weighted=0.90, critical_recall=0.40, f2_threshold=0.75, critical_recall_threshold=0.75
+    )
+
+
+def test_quality_gate_rejects_good_critical_recall_with_bad_f2():
+    assert not _evaluate_quality_gate(
+        f2_weighted=0.50, critical_recall=0.95, f2_threshold=0.75, critical_recall_threshold=0.75
+    )
+
+
+def test_quality_gate_passes_when_both_thresholds_are_met():
+    assert _evaluate_quality_gate(
+        f2_weighted=0.80, critical_recall=0.80, f2_threshold=0.75, critical_recall_threshold=0.75
+    )

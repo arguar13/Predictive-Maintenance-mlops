@@ -23,7 +23,8 @@ model:
 monitoring:
   prometheus_port: 8000
   drift_threshold: 0.05
-  accuracy_threshold: 0.85
+  f2_weighted_threshold: 0.75
+  critical_recall_threshold: 0.75
 """
 
 
@@ -107,7 +108,8 @@ kafka:
 monitoring:
   prometheus_port: 8000
   drift_threshold: 0.05
-  accuracy_threshold: 0.85
+  f2_weighted_threshold: 0.75
+  critical_recall_threshold: 0.75
 """
     )
 
@@ -116,10 +118,10 @@ monitoring:
 
 
 def test_load_config_fails_fast_on_out_of_range_threshold(tmp_path):
-    """FAIL FAST: accuracy_threshold fuera de [0, 1] no es un umbral válido."""
+    """FAIL FAST: f2_weighted_threshold fuera de [0, 1] no es un umbral válido."""
     config_file = tmp_path / "config.yaml"
-    bad_value = "accuracy_threshold: 1.5"
-    invalid_text = _valid_config_text().replace("accuracy_threshold: 0.85", bad_value)
+    bad_value = "f2_weighted_threshold: 1.5"
+    invalid_text = _valid_config_text().replace("f2_weighted_threshold: 0.75", bad_value)
     config_file.write_text(invalid_text)
 
     with pytest.raises(ValueError, match="config.yaml inválido"):

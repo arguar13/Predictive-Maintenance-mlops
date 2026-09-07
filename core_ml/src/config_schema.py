@@ -32,9 +32,12 @@ class ModelConfig(BaseModel):
 class MonitoringConfig(BaseModel):
     prometheus_port: int = Field(gt=0, lt=65536)
     drift_threshold: float = Field(ge=0, le=1)
-    # Umbral del Quality Gate: un modelo recién entrenado solo se promueve
-    # en el Model Registry de MLflow (alias "champion") si lo supera.
-    accuracy_threshold: float = Field(ge=0, le=1)
+    # Quality Gate: un modelo recién entrenado solo se promueve en el Model
+    # Registry de MLflow (alias "champion") si supera AMBOS umbrales -
+    # ver train.py::_evaluate_quality_gate para el porqué (accuracy plano
+    # es ciego al costo asimétrico de un falso negativo en "Critical").
+    f2_weighted_threshold: float = Field(ge=0, le=1)
+    critical_recall_threshold: float = Field(ge=0, le=1)
 
 
 class AppConfig(BaseModel):

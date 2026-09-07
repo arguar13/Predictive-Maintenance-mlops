@@ -144,15 +144,17 @@ train_model:
     - aws s3 cp data/engine_features.parquet "s3://predictive-maintenance-mlops-artifacts-${AWS_ACCOUNT_ID}/feast/data/engine_features.parquet"
     - poetry run feast -c feature_store apply
     # --epochs 25 es un TECHO, no un objetivo: --patience 5 corta el
-    # entrenamiento en cuanto 5 epochs seguidos no mejoran val_accuracy, y
+    # entrenamiento en cuanto 5 epochs seguidos no mejoran F2 ponderado, y
     # siempre se restaura el mejor checkpoint (nunca el ultimo epoch). El
     # default de train.py (epochs=3) es el valor que usa smoke_test para
     # correr en segundos contra el toy dataset -- nunca penso para entrenar
-    # de verdad. Validado localmente contra el dataset completo real con el
-    # modelo ConvTransformer (reemplazo del FCN baseline; benchmark propio
-    # sobre 5 arquitecturas): early stopping corta en epoch ~15,
-    # val_accuracy ~0.907 (accuracy_threshold es 0.85). Reproducible entre
-    # corridas: train.py fija torch.manual_seed(42).
+    # de verdad. Modelo ConvTransformer (reemplazo del FCN baseline;
+    # benchmark propio sobre 5 arquitecturas). El quality gate exige F2
+    # ponderado Y recall de la clase Critical por separado, cada uno contra
+    # su propio umbral en config.yaml (ver train.py::_evaluate_quality_gate)
+    # -- no accuracy plano. Reproducible entre corridas: train.py fija
+    # torch.manual_seed(42) y el split train/val agrupado por motor usa la
+    # misma seed.
     - poetry run python src/train.py --data-dir data --data-source feast --epochs 25 --patience 5
 
 build_image:
