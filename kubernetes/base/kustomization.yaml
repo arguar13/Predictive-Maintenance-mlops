@@ -8,6 +8,7 @@ resources:
   - configmap.yaml
   - mlflow.yaml
   - api.yaml
+  - networkpolicy.yaml
   - streaming-consumer.yaml
   - feast-materialize-cronjob.yaml
   - evidently.yaml
