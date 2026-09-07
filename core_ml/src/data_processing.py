@@ -1,4 +1,3 @@
-import logging
 import os
 
 import numpy as np
@@ -6,8 +5,6 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 from data_contracts import validate_labeled_telemetry, validate_raw_telemetry
-
-logger = logging.getLogger(__name__)
 
 
 def load_and_combine_data(data_dir: str) -> pd.DataFrame:
