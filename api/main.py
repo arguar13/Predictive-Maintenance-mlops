@@ -1,10 +1,14 @@
+import hmac
+import os
+
 import joblib
 import mlflow
 import mlflow.artifacts
 import mlflow.pytorch
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import APIKeyHeader
 from mlflow import MlflowClient
 
 from config_loader import load_config
@@ -21,6 +25,37 @@ CHAMPION_ALIAS = "champion"
 app = FastAPI(title="Predictive Maintenance API", version="2.0")
 config = load_config()
 mlflow.set_tracking_uri(config["model"]["mlflow_tracking_uri"])
+
+# La API se servia sin ninguna autenticacion detras de un Service type:
+# LoadBalancer expuesto a internet - cualquiera con la URL podia consultar
+# /predict. API_KEY llega via envFrom -> secretRef: mlops-secrets
+# (kubernetes/base/externalsecret.yaml -> AWS Secrets Manager), nunca
+# hardcodeada ni en config.yaml (que no es secreto y se commitea). FAIL
+# FAST: arrancar sin ella y caer de vuelta a "sin auth" reintroduciria en
+# silencio exactamente el hueco que este cambio cierra.
+_API_KEY_HEADER = "X-API-Key"
+_api_key_header = APIKeyHeader(name=_API_KEY_HEADER, auto_error=False)
+_raw_api_key = os.environ.get("API_KEY")
+if not _raw_api_key:
+    raise RuntimeError(
+        "La variable de entorno API_KEY no esta definida. La API se niega a "
+        "arrancar sin autenticacion configurada (ver kubernetes/base/"
+        "externalsecret.yaml, secretKey: API_KEY)."
+    )
+_API_KEY: str = _raw_api_key
+
+
+def _is_valid_api_key(provided: str | None, expected: str) -> bool:
+    """Comparacion en tiempo constante: evita una fuga de timing que dejaria
+    adivinar la API key caracter a caracter contra un `==` normal."""
+    if provided is None:
+        return False
+    return hmac.compare_digest(provided, expected)
+
+
+def require_api_key(provided: str | None = Depends(_api_key_header)) -> None:
+    if not _is_valid_api_key(provided, _API_KEY):
+        raise HTTPException(status_code=401, detail="API key inválida o ausente.")
 
 
 def _infer_window_shape(model_uri: str, scaler, fallback: tuple[int, int]) -> tuple[int, int]:
@@ -124,6 +159,11 @@ SensorWindowRequest = get_sensor_window_model(
 
 
 @app.get("/health")
+# Deliberadamente SIN require_api_key: el readinessProbe/livenessProbe de
+# kubernetes/base/api.yaml lo consultan via httpGet sin headers custom, y no
+# expone nada mas sensible que "hay un modelo cargado y que forma espera" -
+# el mismo criterio que separa endpoints de salud de endpoints de negocio en
+# cualquier API publica.
 def health_check():
     if model is None or scaler is None:
         raise HTTPException(status_code=503, detail="Modelo no cargado.")
@@ -138,7 +178,7 @@ def health_check():
     }
 
 
-@app.post("/predict")
+@app.post("/predict", dependencies=[Depends(require_api_key)])
 # SensorWindowRequest se construye en tiempo de ejecución con la forma
 # (window_size x num_features) del modelo servido, por lo que mypy no puede
 # verificar estáticamente sus atributos: es un factory de Pydantic, no un

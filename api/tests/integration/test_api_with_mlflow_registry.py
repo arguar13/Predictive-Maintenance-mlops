@@ -24,6 +24,7 @@ pytestmark = pytest.mark.integration
 MODEL_NAME = "Turbofan_FCN"
 WINDOW_SIZE = 30
 NUM_FEATURES = 14
+TEST_API_KEY = "integration-test-api-key"
 
 
 @pytest.fixture
@@ -105,6 +106,7 @@ def test_api_serves_predictions_from_a_real_mlflow_registry(
     _register_champion_model(tracking_uri, artifact_dir)
 
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    monkeypatch.setenv("API_KEY", TEST_API_KEY)
     main = _import_fresh_main()
 
     client = TestClient(main.app)
@@ -114,7 +116,16 @@ def test_api_serves_predictions_from_a_real_mlflow_registry(
     assert str(health.json()["model_version"]) == "1"
 
     readings = [[0.0] * NUM_FEATURES for _ in range(WINDOW_SIZE)]
-    prediction = client.post("/predict", json={"engine_id": "ENG_001", "readings": readings})
+    payload = {"engine_id": "ENG_001", "readings": readings}
+
+    # Sin X-API-Key: /predict debe rechazar, no servir. Es el comportamiento
+    # que este cambio existe para garantizar - probarlo aqui, contra la app
+    # real (no un mock de require_api_key), es lo unico que confirma que la
+    # dependencia realmente esta enganchada al endpoint y no solo definida.
+    unauthenticated = client.post("/predict", json=payload)
+    assert unauthenticated.status_code == 401
+
+    prediction = client.post("/predict", json=payload, headers={"X-API-Key": TEST_API_KEY})
     assert prediction.status_code == 200
     body = prediction.json()
     assert body["engine_id"] == "ENG_001"
@@ -131,6 +142,7 @@ def test_api_reports_unavailable_when_no_champion_is_registered(postgres_contain
     # debe reflejar honestamente que no hay modelo disponible.
     tracking_uri = postgres_container.get_connection_url()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    monkeypatch.setenv("API_KEY", TEST_API_KEY)
     main = _import_fresh_main()
 
     client = TestClient(main.app)

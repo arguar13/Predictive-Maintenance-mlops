@@ -50,7 +50,8 @@ resource "aws_iam_policy" "s3_access_policy_v2" {
         Effect = "Allow"
         Resource = [
           aws_secretsmanager_secret.db_credentials.arn,
-          aws_secretsmanager_secret.git_token.arn
+          aws_secretsmanager_secret.git_token.arn,
+          aws_secretsmanager_secret.api_key.arn
         ]
       },
       {

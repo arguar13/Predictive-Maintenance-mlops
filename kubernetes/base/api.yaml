@@ -44,6 +44,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: mlops-config
+            # API_KEY: /predict ahora exige autenticacion (ver api/main.py
+            # require_api_key). Antes este Deployment no montaba
+            # mlops-secrets porque la API no consumia ningun secreto.
+            - secretRef:
+                name: mlops-secrets
           env:
             # Con la raiz de solo lectura, MLflow necesita un HOME escribible
             # para su cache y para descargar el scaler del run (ver

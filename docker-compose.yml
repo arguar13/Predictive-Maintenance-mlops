@@ -147,6 +147,10 @@ services:
       dockerfile: Dockerfile
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      # /predict exige X-API-Key (api/main.py::require_api_key). Valor fijo
+      # SOLO para este stack local; en K8s llega via ExternalSecret desde AWS
+      # Secrets Manager (terraform/secrets.tf), nunca este literal.
+      API_KEY: local-dev-only-key-change-me
     ports:
       # 8001 en el host (no 8000): mismo motivo que postgres/mlflow arriba.
       - "8001:8000"
