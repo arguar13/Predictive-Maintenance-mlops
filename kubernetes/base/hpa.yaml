@@ -1,0 +1,60 @@
+# Requiere metrics-server instalado en el cluster (no es un addon EKS
+# nativo via `aws eks create-addon` como vpc-cni/coredns/kube-proxy - se
+# instala por Helm, mismo patron ya usado en este repo para External
+# Secrets Operator, ver externalsecret.yaml):
+#   helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+#   helm install metrics-server metrics-server/metrics-server -n kube-system
+#
+# Sin metrics-server, estos objetos HorizontalPodAutoscaler quedan creados
+# pero inertes: `kubectl get hpa` reporta targets "<unknown>" y nunca
+# escalan - el manifiesto no alcanza para que el autoscaling funcione de
+# verdad, solo el prerrequisito de arriba lo hace.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+  namespace: mlops-env
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: predictive-maintenance-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Sin esto, un pico corto de trafico escala hasta maxReplicas y luego
+    # las apaga en cuanto el pico pasa - "flapping" que castiga la latencia
+    # de arranque de un pod nuevo (carga de modelo desde mlflow) mas veces
+    # de las necesarias. 5 minutos de ventana antes de bajar replicas.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mlflow-hpa
+  namespace: mlops-env
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mlflow
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
