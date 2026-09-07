@@ -66,7 +66,26 @@ def clean_and_prepare(df: pd.DataFrame) -> pd.DataFrame:
 
 def create_sliding_windows(df: pd.DataFrame, window_size: int = 30):
     """Genera ventanas tridimensionales (Muestras, Ventana Temporal,
-    Características) para PyTorch."""
+    Características) para PyTorch.
+
+    Devuelve también `groups`: el `global_unit` (motor físico) que originó
+    cada ventana. Con stride=1, las ventanas de un mismo motor se solapan
+    fuertemente entre sí, así que un split que no agrupe por motor (p.ej.
+    train_test_split fila a fila) deja ventanas casi idénticas del mismo
+    motor a ambos lados del split - el consumidor de este array (train.py)
+    debe usar `groups` con GroupShuffleSplit, nunca un split IID sobre las
+    filas de X/y directamente.
+
+    Nota: el StandardScaler se ajusta sobre TODAS las filas de `df`, no solo
+    sobre un futuro subconjunto de entrenamiento. Es una fuga de información
+    más leve que la del split (estadísticas globales de escalado, no
+    duplicación de muestras) y separar el fit por partición requeriría que
+    esta etapa de preprocesamiento (que no conoce val_split, un parámetro de
+    train.py que se decide por corrida) y el split de entrenamiento
+    coordinen una misma partición de motores - un acoplamiento entre etapas
+    desproporcionado para el tamaño del riesgo. Aceptado conscientemente,
+    no pasado por alto.
+    """
     features = [
         c
         for c in df.columns
@@ -76,7 +95,7 @@ def create_sliding_windows(df: pd.DataFrame, window_size: int = 30):
     scaler = StandardScaler()
     df[features] = scaler.fit_transform(df[features])
 
-    X, y = [], []
+    X, y, groups = [], [], []
     for unit in df["global_unit"].unique():
         unit_data = df[df["global_unit"] == unit].copy()
         unit_data.reset_index(drop=True, inplace=True)
@@ -85,5 +104,6 @@ def create_sliding_windows(df: pd.DataFrame, window_size: int = 30):
             X.append(unit_data[features].iloc[i : i + window_size].values)
             # Etiqueta del último ciclo de la ventana
             y.append(unit_data["failure_type"].iloc[i + window_size - 1])
+            groups.append(unit)
 
-    return np.array(X), np.array(y), scaler
+    return np.array(X), np.array(y), np.array(groups), scaler

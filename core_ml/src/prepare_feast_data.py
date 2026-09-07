@@ -45,7 +45,7 @@ def generate_feast_parquet(data_dir: str = "data", window_limit: int = 5000) -> 
     clean_df = clean_and_prepare(target_df)
 
     # Extraer las ventanas tridimensionales
-    X, y, scaler = create_sliding_windows(clean_df, window_size=WINDOW_SIZE)
+    X, y, groups, scaler = create_sliding_windows(clean_df, window_size=WINDOW_SIZE)
     num_features = X.shape[2]
 
     # 2. Formatear los datos para cumplir con el esquema de Feast (features.py)
@@ -65,7 +65,12 @@ def generate_feast_parquet(data_dir: str = "data", window_limit: int = 5000) -> 
         flat_features = X[i].flatten().tolist()
         records.append(
             {
-                "engine_id": f"ENG_{(i % 100) + 1:03d}",  # Simulamos IDs de motor
+                # global_unit real (p.ej. "FD001_23"), no un id sintético: un
+                # engine_id fabricado por índice (i % N) no se corresponde con
+                # qué motor generó la ventana, y es exactamente el id que
+                # train.py necesita para agrupar por motor al hacer el split
+                # train/val (ver create_sliding_windows).
+                "engine_id": str(groups[i]),
                 "event_timestamp": base_time + timedelta(seconds=i * 10),
                 "created_timestamp": _utc_now_naive(),
                 "windowed_features": flat_features,

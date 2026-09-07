@@ -39,7 +39,7 @@ import torch.nn as nn
 import torch.optim as optim
 import yaml
 from mlflow import MlflowClient
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from torch.utils.data import DataLoader, TensorDataset
 
 from config_loader import load_config
@@ -229,6 +229,47 @@ def _load_training_data_via_feast(data_path: Path, feature_store_path: Path) -> 
 # ---------------------------------------------------------------------------
 
 
+def _split_by_engine(
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    val_split: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Train/val split que nunca parte un motor entre los dos lados.
+
+    Las ventanas se generan con stride=1 por motor (ver create_sliding_windows
+    en data_processing.py), asi que ventanas consecutivas del mismo motor se
+    solapan en ~29 de sus 30 timesteps. Un split IID fila a fila (el
+    train_test_split que este proyecto usaba antes) deja copias casi
+    identicas del mismo motor a ambos lados: el modelo "ve" en validation
+    ventanas practicamente iguales a las que acaba de entrenar, lo que infla
+    val_accuracy -- y por lo tanto el quality gate -- sin que el modelo
+    generalice mejor. GroupShuffleSplit, agrupando por `groups` (engine_id),
+    garantiza que todas las ventanas de un motor caen enteras en train o en
+    val. No estratifica por clase (GroupShuffleSplit no lo soporta): con
+    cientos de motores distintos en el dataset completo el balance de clases
+    entre train/val ya sale razonablemente parejo sin forzarlo, y agrupar por
+    motor es la prioridad no negociable aqui.
+    """
+    n_engines = len(np.unique(groups))
+    if n_engines < 2:
+        # Solo puede pasar contra el dataset toy diminuto del smoke test
+        # (--no-enforce-quality-gate): con menos de dos motores distintos no
+        # hay forma de reservar val sin partir un motor por la mitad.
+        # GroupShuffleSplit fallaria con "el train set quedaria vacio" - usar
+        # todo como train y como val sigue probando que el pipeline corre de
+        # punta a punta, que es lo unico que el smoke test necesita. El
+        # dataset completo tiene cientos de motores; esta rama nunca se
+        # activa fuera del smoke test.
+        log.warning("too_few_engines_for_group_split", n_engines=n_engines)
+        return X, X, y, y
+
+    splitter = GroupShuffleSplit(n_splits=1, test_size=val_split, random_state=seed)
+    train_idx, val_idx = next(splitter.split(X, y, groups=groups))
+    return X[train_idx], X[val_idx], y[train_idx], y[val_idx]
+
+
 def train_pipeline(
     data_dir: str = "data",
     data_source: str = "feast",
@@ -244,7 +285,7 @@ def train_pipeline(
     # y el orden de batches del DataLoader (shuffle=True) son no-deterministas
     # -- el mismo commit + mismos datos + mismos hiperparametros podia pasar
     # el quality gate en una corrida del pipeline y fallar en la siguiente.
-    # Misma semilla que train_test_split (random_state=42) mas abajo.
+    # Misma semilla que _split_by_engine mas abajo.
     torch.manual_seed(seed)
     config = load_config()
     mlflow.set_tracking_uri(
@@ -288,16 +329,9 @@ def train_pipeline(
         ]
     )
     y = training_data["failure_type"].to_numpy()
+    groups = training_data["engine_id"].to_numpy()
 
-    try:
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=val_split, random_state=42, stratify=y
-        )
-    except ValueError:
-        # Alguna clase tiene muy pocas muestras para estratificar (dataset toy diminuto)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=val_split, random_state=42
-        )
+    X_train, X_val, y_train, y_val = _split_by_engine(X, y, groups, val_split, seed)
 
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
     y_train_tensor = torch.tensor(y_train, dtype=torch.long)
