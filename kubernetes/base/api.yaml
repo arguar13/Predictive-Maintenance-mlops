@@ -97,3 +97,14 @@ spec:
   ports:
     - port: 8000
       targetPort: 8000
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+  namespace: mlops-env
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api

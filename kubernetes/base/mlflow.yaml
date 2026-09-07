@@ -4,7 +4,7 @@ metadata:
   name: mlflow
   namespace: mlops-env
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: mlflow
@@ -115,3 +115,20 @@ spec:
     - port: 5000
       targetPort: 5000
   type: ClusterIP
+---
+# mlflow server es stateless (el estado vive en RDS/S3), asi que la segunda
+# replica de arriba no necesita ninguna historia de leader-election. Sin
+# este PDB, una unica disrupcion voluntaria (drenar un nodo durante un
+# upgrade de EKS) podia tumbar las dos replicas en la misma ventana y
+# dejar sin tracking server a la vez a api (que carga el modelo desde aca
+# al arrancar) y al pipeline de entrenamiento.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mlflow-pdb
+  namespace: mlops-env
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mlflow
