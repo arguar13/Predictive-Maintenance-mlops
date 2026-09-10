@@ -51,3 +51,7 @@ htmlcov/
 
 # gitlab-ci-local (validacion local del pipeline de CI)
 .gitlab-ci-local/
+
+# Documentacion local (no versionar)
+GUIA_EJECUCION_PROYECTO 611.docx
+Guia completa del proyecto 611/
