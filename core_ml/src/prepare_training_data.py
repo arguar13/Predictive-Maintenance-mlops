@@ -1,3 +1,13 @@
+"""Construye engine_features.parquet + scaler.joblib a partir de los .txt
+crudos de C-MAPSS.
+
+Único paso de preparación de datos del pipeline: transforma los .txt crudos
+en las ventanas que `train.py` consume, y las persiste como Parquet. Sin
+online store ni nada sirviendo features en tiempo real, un `pd.read_parquet`
+directo (ver `train.py`) resuelve la lectura sin infraestructura adicional
+que mantener.
+"""
+
 import argparse
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,24 +24,24 @@ from data_processing import (
 )
 from logging_config import configure_logging
 
-log = configure_logging("prepare-feast-data")
+log = configure_logging("prepare-training-data")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 WINDOW_SIZE = 30
 
 
 def _utc_now_naive() -> datetime:
-    """UTC "naive" (sin tzinfo): Feast y el esquema de ventanas esperan
-    datetime64[ns] sin zona horaria, no datetime64[ns, UTC]."""
+    """UTC "naive" (sin tzinfo): el contrato de datos (data_contracts.py::
+    WINDOWED_FEATURE_SCHEMA) espera datetime64[ns] sin zona horaria."""
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def generate_feast_parquet(data_dir: str = "data", window_limit: int = 5000) -> Path:
-    """Construye engine_features.parquet + training_entities.parquet + scaler.joblib.
+def generate_training_parquet(data_dir: str = "data", window_limit: int = 5000) -> Path:
+    """Construye engine_features.parquet + scaler.joblib.
 
     `data_dir` es relativo a core_ml/ (p.ej. "data" para el dataset completo
-    o "data_toy" para el dataset de ~1000 filas versionado con DVC). Todos
-    los artefactos de una ejecución (parquet + scaler) quedan en el MISMO
+    o "data_toy" para el dataset de ~1000 filas versionado con DVC). Los dos
+    artefactos de una ejecución (parquet + scaler) quedan en el MISMO
     directorio versionado por DVC, para que el scaler nunca sea un archivo
     suelto sin relación con los datos que lo generaron.
     """
@@ -48,20 +58,23 @@ def generate_feast_parquet(data_dir: str = "data", window_limit: int = 5000) -> 
     X, y, groups, scaler = create_sliding_windows(clean_df, window_size=WINDOW_SIZE)
     num_features = X.shape[2]
 
-    # 2. Formatear los datos para cumplir con el esquema de Feast (features.py)
-    log.info("formatting_for_feast")
+    # 2. Aplanar las ventanas a filas de un DataFrame (el formato que
+    # train.py espera, ver data_contracts.py::WINDOWED_FEATURE_SCHEMA).
+    log.info("flattening_windows")
     records = []
 
-    # Feast requiere timestamps. Simularemos que los datos llegaron en las últimas 24 horas
-    # para que el TTL de Feast los acepte en el Online Store.
+    # event_timestamp/created_timestamp son parte del contrato de datos
+    # (WINDOWED_FEATURE_SCHEMA exige datetime64[ns]), aunque train.py no las
+    # use como feature: documentan cuándo se generó cada ventana.
     base_time = _utc_now_naive() - timedelta(hours=23)
 
     # Para no saturar la RAM local, procesamos solo un subconjunto
-    # (por defecto las primeras 5000 ventanas). En producción esto se hace con PySpark.
+    # (por defecto las primeras 5000 ventanas). En producción esto se haría
+    # con un job distribuido (p.ej. PySpark) en vez de un script en un solo
+    # proceso.
     limit = min(len(X), window_limit)
 
     for i in range(limit):
-        # Feast espera un Array(Float32) aplanado
         flat_features = X[i].flatten().tolist()
         records.append(
             {
@@ -78,29 +91,19 @@ def generate_feast_parquet(data_dir: str = "data", window_limit: int = 5000) -> 
             }
         )
 
-    feast_df = pd.DataFrame(records)
+    features_df = pd.DataFrame(records)
 
     # FAIL FAST: valida el contrato de las ventanas antes de escribir nada a disco.
-    feast_df = validate_windowed_features(feast_df, expected_length=WINDOW_SIZE * num_features)
+    expected_length = WINDOW_SIZE * num_features
+    features_df = validate_windowed_features(features_df, expected_length=expected_length)
 
-    # 3. Guardar como Parquet maestro (para el Offline Store de Feast)
-    master_path = data_path / "engine_features.parquet"
-    feast_df.to_parquet(master_path, index=False)
-    log.info("parquet_written", master_path=str(master_path), rows=len(feast_df))
+    # 3. Guardar como Parquet (única fuente de datos de entrenamiento que
+    # train.py lee).
+    features_path = data_path / "engine_features.parquet"
+    features_df.to_parquet(features_path, index=False)
+    log.info("parquet_written", features_path=str(features_path), rows=len(features_df))
 
-    # 4. Generar el Entity DataFrame (para que train.py lo consuma)
-    log.info("extracting_entity_dataframe")
-    entity_df = feast_df[["engine_id", "event_timestamp"]].copy()
-
-    # Práctica Senior: Barajar (shuffle) los eventos para evitar sesgos
-    # de orden de llegada en el entrenamiento
-    entity_df = entity_df.sample(frac=1, random_state=42).reset_index(drop=True)
-
-    entity_path = data_path / "training_entities.parquet"
-    entity_df.to_parquet(entity_path, index=False)
-    log.info("entity_dataframe_written", entity_path=str(entity_path))
-
-    # 5. Persistir el scaler DENTRO del mismo directorio versionado por DVC
+    # 4. Persistir el scaler DENTRO del mismo directorio versionado por DVC
     # que los datos que lo generaron (nunca un archivo suelto en models/).
     scaler_path = data_path / "scaler.joblib"
     joblib.dump(scaler, scaler_path)
@@ -129,4 +132,4 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    generate_feast_parquet(data_dir=args.data_dir, window_limit=args.window_limit)
+    generate_training_parquet(data_dir=args.data_dir, window_limit=args.window_limit)

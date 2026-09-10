@@ -29,7 +29,7 @@ mlflow.set_tracking_uri(config["model"]["mlflow_tracking_uri"])
 # La API se servia sin ninguna autenticacion detras de un Service type:
 # LoadBalancer expuesto a internet - cualquiera con la URL podia consultar
 # /predict. API_KEY llega via envFrom -> secretRef: mlops-secrets
-# (kubernetes/base/externalsecret.yaml -> AWS Secrets Manager), nunca
+# (kubernetes/base/secret.yaml, un Secret plano de Kubernetes), nunca
 # hardcodeada ni en config.yaml (que no es secreto y se commitea). FAIL
 # FAST: arrancar sin ella y caer de vuelta a "sin auth" reintroduciria en
 # silencio exactamente el hueco que este cambio cierra.
@@ -40,7 +40,7 @@ if not _raw_api_key:
     raise RuntimeError(
         "La variable de entorno API_KEY no esta definida. La API se niega a "
         "arrancar sin autenticacion configurada (ver kubernetes/base/"
-        "externalsecret.yaml, secretKey: API_KEY)."
+        "secret.yaml, clave API_KEY)."
     )
 _API_KEY: str = _raw_api_key
 

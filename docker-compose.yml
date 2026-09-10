@@ -1,7 +1,6 @@
-# Fase 3 (Local First): levanta TODOS los componentes -- Postgres, MLflow,
-# la API y LocalStack ("la nube falsa") -- como contenedores efimeros en la
-# maquina local, para validar que se entienden entre si antes de tocar
-# RDS/EKS/S3 reales en AWS.
+# Levanta TODOS los componentes -- Postgres, MLflow, la API y LocalStack
+# ("la nube falsa") -- como contenedores efimeros en la maquina local, para
+# validar que se entienden entre si antes de tocar RDS/EKS/S3 reales en AWS.
 #
 # Uso:
 #   docker compose up -d          # levanta todo el stack
@@ -35,15 +34,19 @@ services:
       retries: 5
 
   mlflow:
-    build:
-      context: .
-      dockerfile: Dockerfile.mlflow
+    # Imagen oficial de MLflow tal cual, sin build propio. No trae driver de
+    # Postgres (psycopg2) instalado -- por eso el "command" de abajo lo
+    # instala con pip antes de arrancar el server. Es mas simple de mantener
+    # que una imagen propia (sin Dockerfile.mlflow que versionar/publicar),
+    # a costa de un arranque un poco mas lento (pip install en cada start).
+    image: ghcr.io/mlflow/mlflow:v3.15.1
     command: >
+      bash -c "pip install --no-cache-dir psycopg2-binary==2.9.9 &&
       mlflow server
       --host 0.0.0.0
       --backend-store-uri postgresql://mlflow_user:mlflow_password@postgres:5432/mlflow_db
       --serve-artifacts
-      --artifacts-destination /mlruns
+      --artifacts-destination /mlruns"
     environment:
       # MLflow >=3 rechaza por defecto cualquier Host header que no sea
       # localhost/127.0.0.1/una IP privada literal (proteccion anti DNS
@@ -63,20 +66,28 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      # Sin curl (la imagen oficial no lo trae): se usa el propio interprete
+      # de Python de la imagen para pegarle a /health.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 20s
 
-  # LocalStack: "la nube falsa". Simula S3 (Feast offline store, remoto de
-  # DVC) y Secrets Manager localmente, sin credenciales ni costes reales de
-  # AWS. Ver localstack/init-aws.sh para los recursos que se bootstrapean
+  # LocalStack: "la nube falsa". Simula S3 (remoto de DVC, artefactos de
+  # MLflow) localmente, sin credenciales ni costes reales de AWS. Ver
+  # localstack/init-aws.sh para los recursos que se bootstrapean
   # automaticamente (mismo nombre de bucket que en terraform/s3.tf).
   localstack:
     image: localstack/localstack:3.8
     environment:
-      SERVICES: s3,secretsmanager
+      SERVICES: s3
       DEFAULT_REGION: us-east-1
       AWS_DEFAULT_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
@@ -104,8 +115,8 @@ services:
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       # /predict exige X-API-Key (api/main.py::require_api_key). Valor fijo
-      # SOLO para este stack local; en K8s llega via ExternalSecret desde AWS
-      # Secrets Manager (terraform/secrets.tf), nunca este literal.
+      # SOLO para este stack local; en K8s llega desde un Secret de
+      # Kubernetes (kubernetes/base/secret.yaml), nunca este literal.
       API_KEY: local-dev-only-key-change-me
     ports:
       # 8001 en el host (no 8000): mismo motivo que postgres/mlflow arriba.

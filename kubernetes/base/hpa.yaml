@@ -1,7 +1,6 @@
 # Requiere metrics-server instalado en el cluster (no es un addon EKS
 # nativo via `aws eks create-addon` como vpc-cni/coredns/kube-proxy - se
-# instala por Helm, mismo patron ya usado en este repo para External
-# Secrets Operator, ver externalsecret.yaml):
+# instala por Helm):
 #   helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
 #   helm install metrics-server metrics-server/metrics-server -n kube-system
 #

@@ -1,17 +1,10 @@
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 20.0"
-  # "mlops-cluster" (nombre generico, sin el prefijo var.project_name que usa
-  # el resto de los recursos de este proyecto -- RDS, S3, ECR, KMS) colisiono
-  # con otro proyecto de la misma cuenta AWS que sigue una
-  # plantilla de curso similar: su `aws eks update-kubeconfig --name
-  # mlops-cluster` se conecto a ESTE cluster (ya existente) en vez de crear
-  # uno propio, y su ArgoCD borro el namespace "argocd" (incluida la
-  # Application de este proyecto) al instalarse pensando que el cluster
-  # estaba vacio. var.project_name (unico) sin sufijo "-cluster" adicional:
-  # el modulo ya agrega su propio sufijo "-cluster-" al name_prefix del rol
-  # IAM del cluster, con un limite de 38 caracteres -- "${var.project_name}-
-  # cluster" + ese sufijo interno lo supera.
+  # var.project_name (unico) como nombre de cluster, sin sufijo "-cluster"
+  # adicional: el modulo ya agrega su propio sufijo "-cluster-" al
+  # name_prefix del rol IAM del cluster, con un limite de 38 caracteres --
+  # "${var.project_name}-cluster" + ese sufijo interno lo supera.
   cluster_name    = var.project_name
   cluster_version = var.cluster_version # Toma el valor 1.36 de variables.tf
   vpc_id          = module.vpc.vpc_id
@@ -24,9 +17,9 @@ module "eks" {
   # Internet. Se restringe a las CIDR declaradas en var.cluster_public_access_cidrs.
   #
   # El endpoint sigue siendo publico (AWS-0040) de forma deliberada: hacerlo
-  # privado obligaria a un bastion o VPN para cualquier `kubectl`, y ArgoCD
-  # -- que es quien realmente despliega -- vive DENTRO del cluster y usa el
-  # endpoint interno. Ver .trivyignore para la aceptacion documentada.
+  # privado obligaria a un bastion o VPN para cualquier `kubectl`, incluido
+  # el pipeline de CI que despliega (ver .gitlab-ci.yml, stage "deploy").
+  # Ver .trivyignore para la aceptacion documentada.
   cluster_endpoint_public_access       = true
   cluster_endpoint_public_access_cidrs = var.cluster_public_access_cidrs
 
@@ -35,8 +28,14 @@ module "eks" {
   # datos.
   cluster_enabled_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
-  # Fundamental para seguridad MLOps (IRSA)
-  enable_irsa = true
+  # Los pods obtienen acceso a S3 a traves del rol de instancia del node
+  # group (ver eks_managed_node_groups.ml_workers.iam_role_additional_policies
+  # mas abajo, y terraform/iam.tf: aws_iam_policy.node_s3_access), no de un
+  # rol IRSA por Service Account: mas simple de operar y depurar a costa de
+  # aislar el permiso por nodo en vez de por pod. Un rol IRSA dedicado por
+  # Service Account es la mejora obvia si el aislamiento por pod se vuelve
+  # un requisito.
+  enable_irsa = false
 
   # El modulo v20 NO le da admin al identity que corre `terraform apply` por
   # defecto (a diferencia de versiones anteriores): sin esto, `aws eks
@@ -55,6 +54,12 @@ module "eks" {
       desired_size   = 2
       instance_types = ["t3.large"]
       disk_size      = 40
+
+      # Ver comentario de enable_irsa arriba: los pods (mlflow, api) llegan
+      # a S3 a traves de este rol de instancia, no de un rol IRSA propio.
+      iam_role_additional_policies = {
+        s3_access = aws_iam_policy.node_s3_access.arn
+      }
     }
   }
 }

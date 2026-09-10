@@ -25,15 +25,31 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      # La imagen oficial ghcr.io/mlflow/mlflow no trae driver de Postgres
+      # (psycopg2), y este backend-store-uri es Postgres/RDS -- sin el, el
+      # server crashea al arrancar con ModuleNotFoundError: psycopg2. Antes
+      # este proyecto resolvia esto con una imagen propia (Dockerfile.mlflow,
+      # publicada a un ECR dedicado); ahora, para usar la imagen oficial tal
+      # cual (sin build+push propio que mantener), un initContainer instala
+      # psycopg2-binary en un volumen compartido ANTES de que arranque el
+      # contenedor principal, y PYTHONPATH lo apunta ahi. Con
+      # readOnlyRootFilesystem=true en el contenedor principal, este volumen
+      # (emptyDir) es el unico lugar donde algo puede quedar instalado.
+      initContainers:
+        - name: install-psycopg2
+          image: ghcr.io/mlflow/mlflow:v3.15.1
+          command:
+            - "pip"
+            - "install"
+            - "--no-cache-dir"
+            - "--target=/opt/pip-packages"
+            - "psycopg2-binary==2.9.9"
+          volumeMounts:
+            - name: pip-packages
+              mountPath: /opt/pip-packages
       containers:
         - name: mlflow
-          # Imagen propia (Dockerfile.mlflow, publicada por el pipeline a ECR),
-          # NO la imagen publica ghcr.io/mlflow/mlflow: esta ultima no trae
-          # psycopg2, y backend-store-uri de abajo es Postgres/RDS -- el
-          # server crashea en el arranque con ModuleNotFoundError: psycopg2.
-          # kustomize edit set image (make gitops-set-image/release) fija el
-          # tag real; kubernetes/overlays/production declara el newName.
-          image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow:latest
+          image: ghcr.io/mlflow/mlflow:v3.15.1
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -56,6 +72,8 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            - name: PYTHONPATH
+              value: /opt/pip-packages
             # MLflow >=3 rechaza por defecto cualquier Host header que no sea
             # localhost/127.0.0.1/una IP privada literal (proteccion anti DNS
             # rebinding). api llama a este servidor como "http://mlflow:5000"
@@ -64,17 +82,13 @@ spec:
             # explicitamente el nombre corto y el FQDN del Service como
             # permitidos (mismo problema que en docker-compose.yml, ver su
             # comentario).
-            #
-            # host.docker.internal(:*): el job train_model del runner
-            # self-hosted (fuera del cluster, en el hardware que ejecuta
-            # runner/docker-compose.yml) llega a este Service via
-            # `kubectl port-forward svc/mlflow 5000:5000` + ese nombre DNS
-            # especial de Docker Desktop hacia el host -- mismo 403 sin esto.
             - name: MLFLOW_SERVER_ALLOWED_HOSTS
-              value: "mlflow,mlflow:*,mlflow.mlops-env,mlflow.mlops-env:*,mlflow.mlops-env.svc.cluster.local,mlflow.mlops-env.svc.cluster.local:*,host.docker.internal,host.docker.internal:*"
+              value: "mlflow,mlflow:*,mlflow.mlops-env,mlflow.mlops-env:*,mlflow.mlops-env.svc.cluster.local,mlflow.mlops-env.svc.cluster.local:*"
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: pip-packages
+              mountPath: /opt/pip-packages
           # Sin requests/limits el pod es BestEffort: es el primero que el
           # kubelet desaloja bajo presion de memoria, justo cuando mas falta
           # hace el tracking server (KSV-0011/0015/0016/0018).
@@ -101,6 +115,8 @@ spec:
             periodSeconds: 20
       volumes:
         - name: tmp
+          emptyDir: {}
+        - name: pip-packages
           emptyDir: {}
 ---
 apiVersion: v1

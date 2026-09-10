@@ -4,16 +4,14 @@ kind: Kustomization
 resources:
 - ../../base
 
-# El pipeline de CI (.gitlab-ci.yml, stage "release") actualiza SOLO este
+# El pipeline de CI (.gitlab-ci.yml, stage "deploy") actualiza SOLO este
 # bloque de forma declarativa con:
-#   kustomize edit set image <repo>/predictive-maintenance-mlops-streaming=<repo>/predictive-maintenance-mlops-streaming:$CI_COMMIT_SHA
-#   kustomize edit set image <repo>/predictive-maintenance-mlops-mlflow=<repo>/predictive-maintenance-mlops-mlflow:$CI_COMMIT_SHA
-# (ver `make gitops-set-image`) y commitea el resultado a git -- nunca un
-# `sed -i` sobre el YAML. ArgoCD sincroniza el cluster con lo que hay aqui.
+#   kustomize edit set image <repo>/predictive-maintenance-mlops-api=<repo>/predictive-maintenance-mlops-api:$CI_COMMIT_SHA
+# (ver Makefile, target `deploy`) y aplica directo contra el cluster con
+# `kubectl apply -k` -- nunca un `sed -i` sobre el YAML. No hay imagen de
+# mlflow que fijar aqui: corre desde la imagen publica ghcr.io/mlflow/mlflow
+# (ver kubernetes/base/mlflow.yaml), no una imagen propia versionada por CI.
 images:
-- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow
-  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-mlflow
-  newTag: a7665252f1218574a10b9dae271126b0d701b3b4
-- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
-  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming
+- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-api
+  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-api
   newTag: a7665252f1218574a10b9dae271126b0d701b3b4

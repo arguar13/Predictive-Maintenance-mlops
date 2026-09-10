@@ -1,12 +1,11 @@
 resource "aws_s3_bucket" "mlflow_artifacts" {
   bucket = "${var.project_name}-artifacts-${data.aws_caller_identity.current.account_id}"
   # force_destroy: mismo criterio que los repos ECR (terraform/ecr.tf) -- este
-  # proyecto pasa por ciclos destroy/apply completos (entrega de curso, no un
-  # entorno productivo de largo plazo). Sin esto, `terraform destroy` falla
-  # en cuanto el bucket tiene objetos (datos de DVC, parquet de Feast,
-  # artefactos de MLflow) o versiones antiguas (versioning esta habilitado
-  # mas abajo); force_destroy vacia el bucket, incluidas todas las versiones,
-  # antes de eliminarlo.
+  # proyecto pasa por ciclos destroy/apply completos, no un entorno
+  # productivo de largo plazo. Sin esto, `terraform destroy` falla en cuanto
+  # el bucket tiene objetos (datos de DVC, artefactos de MLflow) o versiones
+  # antiguas (versioning esta habilitado mas abajo); force_destroy vacia el
+  # bucket, incluidas todas las versiones, antes de eliminarlo.
   force_destroy = true
 }
 
@@ -21,21 +20,19 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "mlflow_artifacts_
   bucket = aws_s3_bucket.mlflow_artifacts.id
   rule {
     apply_server_side_encryption_by_default {
-      # CMK del proyecto (terraform/kms.tf) en vez de la clave gestionada por
-      # AWS: habilita rotacion, key policy propia y atribucion en CloudTrail.
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.mlops.arn
+      # SSE-S3 (clave gestionada por AWS, AES256) en vez de una CMK propia:
+      # sigue cifrado en reposo; solo se pierde rotacion/key policy propias y
+      # la atribucion de uso de clave en CloudTrail -- una CMK dedicada es la
+      # mejora obvia si eso se vuelve un requisito.
+      sse_algorithm = "AES256"
     }
-    # Clave de bucket: una sola llamada a KMS por lote de objetos en vez de
-    # una por objeto. MLflow escribe muchos artefactos pequeños por run.
-    bucket_key_enabled = true
   }
 }
 
-# El bucket guarda artefactos de modelos, datasets versionados con DVC y el
-# registro de Feast: nada de eso debe ser jamas accesible publicamente. El
-# bucket de estado de Terraform (terraform/bootstrap/main.tf) ya tenia este
-# bloqueo; el de artefactos no -- trivy lo reporta como AWS-0094.
+# El bucket guarda artefactos de modelos y datasets versionados con DVC:
+# nada de eso debe ser jamas accesible publicamente. El bucket de estado de
+# Terraform (terraform/bootstrap/main.tf) ya tenia este bloqueo; el de
+# artefactos no -- trivy lo reporta como AWS-0094.
 resource "aws_s3_bucket_public_access_block" "mlflow_artifacts" {
   bucket                  = aws_s3_bucket.mlflow_artifacts.id
   block_public_acls       = true

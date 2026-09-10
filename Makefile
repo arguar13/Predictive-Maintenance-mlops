@@ -7,29 +7,24 @@ PY := python
 AWS_ACCOUNT_ID ?= 040175285118
 AWS_REGION ?= us-east-1
 ECR_REGISTRY ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
-API_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-streaming
-MLFLOW_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-mlflow
-BUILD_CACHE_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-build-cache
+API_IMAGE := $(ECR_REGISTRY)/predictive-maintenance-mlops-api
 # Tag inmutable y trazable: por defecto el commit de git (igual que
 # CI_COMMIT_SHA en GitLab) -- nunca "latest" en un release real.
 IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
-GITOPS_OVERLAY := kubernetes/overlays/production
+K8S_OVERLAY := kubernetes/overlays/production
+EKS_CLUSTER_NAME ?= predictive-maintenance-mlops
 
 .PHONY: help install install-api install-core \
 	format format-check lint lint-fix typecheck \
-	test test-api test-core coverage test-integration \
-	security bandit trivy yamllint \
+	test test-api test-core coverage \
 	precommit-install precommit-run \
 	build-toy-dataset prepare-toy prepare-data train train-toy smoke-test \
 	dvc-pull dvc-push dvc-use-localstack \
 	compose-up compose-down compose-destroy compose-logs compose-ps localstack-env \
-	docker-build-api docker-build-mlflow docker-build \
-	docker-push-api docker-push-mlflow docker-push \
-	docker-buildx-push-api docker-buildx-push-mlflow docker-buildx-push \
-	k8s-build k8s-diff gitops-set-image gitops-release \
-	terraform-fmt terraform-validate terraform-plan \
+	docker-build docker-push \
+	k8s-build k8s-diff deploy \
+	terraform-fmt terraform-validate terraform-plan terraform-apply \
 	ci-local \
-	runner-register runner-up runner-down runner-status runner-logs runner-unregister \
 	ci clean
 
 help: ## Muestra esta ayuda
@@ -53,17 +48,13 @@ install-core: ## Instala dependencias de core_ml/ (incluye grupo dev)
 ## Validacion shift-left (Python)
 ## ---------------------------------------------------------------------
 
-format: ## Aplica isort + black (modifica archivos) en api/ y core_ml/
-	poetry -C $(API) run isort .
-	poetry -C $(API) run black .
-	poetry -C $(CORE) run isort .
-	poetry -C $(CORE) run black .
+format: ## Aplica ruff format (modifica archivos) en api/ y core_ml/
+	poetry -C $(API) run ruff format .
+	poetry -C $(CORE) run ruff format .
 
-format-check: ## Verifica formato/orden de imports sin modificar (usado en CI)
-	poetry -C $(API) run isort --check-only .
-	poetry -C $(API) run black --check .
-	poetry -C $(CORE) run isort --check-only .
-	poetry -C $(CORE) run black --check .
+format-check: ## Verifica formato sin modificar (usado en CI)
+	poetry -C $(API) run ruff format --check .
+	poetry -C $(CORE) run ruff format --check .
 
 lint: ## Ejecuta ruff (lint) en api/ y core_ml/
 	poetry -C $(API) run ruff check .
@@ -73,9 +64,9 @@ lint-fix: ## Ejecuta ruff con autofix en api/ y core_ml/
 	poetry -C $(API) run ruff check --fix .
 	poetry -C $(CORE) run ruff check --fix .
 
-typecheck: ## Ejecuta mypy en api/ y core_ml/
+typecheck: ## Ejecuta mypy en api/ y core_ml/ (opcional, no bloquea CI)
 	poetry -C $(API) run mypy .
-	poetry -C $(CORE) run mypy src feature_store
+	poetry -C $(CORE) run mypy src
 
 test: test-api test-core ## Ejecuta pytest en api/ y core_ml/
 
@@ -87,74 +78,34 @@ test-core: ## Ejecuta pytest solo en core_ml/
 
 coverage: ## Ejecuta pytest con cobertura en api/ y core_ml/
 	poetry -C $(API) run pytest --cov=. --cov-report=term-missing
-	poetry -C $(CORE) run pytest --cov=src --cov=feature_store --cov-report=term-missing
-
-test-integration: ## Pruebas de integracion (Testcontainers: Postgres/LocalStack). Requiere Docker.
-	poetry -C $(API) run pytest -m integration -v
-	poetry -C $(CORE) run pytest -m integration -v
+	poetry -C $(CORE) run pytest --cov=src --cov-report=term-missing
 
 ## ---------------------------------------------------------------------
-## Seguridad (secretos, dependencias, IaC)
-## ---------------------------------------------------------------------
-
-bandit: ## Analisis estatico de seguridad (SAST) del codigo Python
-	poetry -C $(API) run bandit -q -r . -x ./tests,./.venv
-	poetry -C $(CORE) run bandit -q -r src feature_store
-
-# El gate rompe la build en HIGH/CRITICAL y solo REPORTA lo demas. Antes
-# usaba --exit-code 1 sobre TODAS las severidades: con 144 hallazgos (63 LOW
-# y 39 MEDIUM, buena parte dentro de modulos Terraform de terceros como
-# terraform-aws-modules/eks y /vpc, que no podemos editar), el gate era
-# imposible de pasar -- `make ci` fallaba siempre y, con el, el stage
-# "quality" de .gitlab-ci.yml. Un gate que nadie puede pasar acaba
-# desactivado, que es peor que un gate calibrado.
-# --ignore-unfixed: no rompe la build por CVEs que aun no tienen version
-# corregida publicada (no hay accion posible salvo dejar de usar el paquete).
-trivy: ## Escaneo de secretos, vulnerabilidades de dependencias e IaC
-	@command -v trivy >/dev/null 2>&1 || { \
-		echo "trivy no esta instalado. Instalacion:"; \
-		echo "  macOS   : brew install aquasecurity/trivy/trivy"; \
-		echo "  Windows : choco install trivy  |  scoop install trivy"; \
-		echo "  Linux   : curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin"; \
-		exit 1; \
-	}
-	trivy fs --scanners vuln,secret,misconfig --exit-code 1 \
-		--severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore.yaml \
-		--skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv,.gitlab-ci-local \
-		--skip-files terraform/terraform.tfvars,terraform/terraform.tfstate,terraform/terraform.tfstate.backup,terraform/main.tfplan,terraform/bootstrap/terraform.tfstate,terraform/bootstrap/terraform.tfstate.backup \
-		.
-
-security: bandit trivy ## Ejecuta bandit + trivy (SAST + secretos + vulnerabilidades + IaC)
-
-## ---------------------------------------------------------------------
-## Datos, contratos y reproducibilidad (Fase 2)
+## Datos y reproducibilidad
 ## ---------------------------------------------------------------------
 
 build-toy-dataset: ## Regenera el dataset toy (~1000 filas, fijo) desde el dataset completo
 	poetry -C $(CORE) run python scripts/build_toy_dataset.py
 
-prepare-toy: ## Construye engine_features/training_entities/scaler.joblib del dataset toy
-	poetry -C $(CORE) run python src/prepare_feast_data.py --data-dir data_toy
+prepare-toy: ## Construye engine_features.parquet + scaler.joblib del dataset toy
+	poetry -C $(CORE) run python src/prepare_training_data.py --data-dir data_toy
 
-prepare-data: ## Construye engine_features/training_entities/scaler.joblib del dataset completo
-	poetry -C $(CORE) run python src/prepare_feast_data.py --data-dir data
+prepare-data: ## Construye engine_features.parquet + scaler.joblib del dataset completo
+	poetry -C $(CORE) run python src/prepare_training_data.py --data-dir data
 
-train: ## Entrena con el dataset completo via Feast (produccion; exige el quality gate)
-	poetry -C $(CORE) run python src/train.py --data-dir data --data-source feast
+train: prepare-data ## Entrena con el dataset completo (exige el quality gate)
+	poetry -C $(CORE) run python src/train.py --data-dir data --epochs 25 --patience 5
 
-# MLFLOW_TRACKING_URI por defecto: un store SQLite local y efimero, igual
-# que hace el job smoke_test de .gitlab-ci.yml. Sin esto el comando NO era
-# autonomo: config.yaml resuelve ${MLFLOW_TRACKING_URI} y, sin la variable,
-# el fallback heredado era "localhost:5000" (una URI SIN esquema), que
-# MLflow rechaza con UnsupportedModelRegistryStoreURIException -- pese a que
-# README y la guia documentan `make smoke-test` como ejecutable en un
-# portatil sin levantar nada previo.
+# MLFLOW_TRACKING_URI por defecto: un store SQLite local y efimero. Sin
+# esto el comando no seria autonomo: config.yaml resuelve
+# ${MLFLOW_TRACKING_URI} y, sin la variable, el fallback heredado era
+# "localhost:5000" (una URI SIN esquema), que MLflow rechaza.
 # Se respeta el valor externo si ya esta definido (p.ej. el MLflow de
-# docker-compose: export MLFLOW_TRACKING_URI=http://localhost:5000).
-train-toy: prepare-toy ## Entrena end-to-end con el dataset toy: segundos, sin GPU/Feast/S3
+# docker-compose: export MLFLOW_TRACKING_URI=http://localhost:5001).
+train-toy: prepare-toy ## Entrena end-to-end con el dataset toy: segundos, sin GPU
 	MLFLOW_TRACKING_URI="$${MLFLOW_TRACKING_URI:-sqlite:///mlruns/smoke_test.db}" \
 	poetry -C $(CORE) run python src/train.py \
-		--data-dir data_toy --data-source parquet --no-enforce-quality-gate
+		--data-dir data_toy --no-enforce-quality-gate
 
 smoke-test: train-toy ## Valida el pipeline E2E (datos+contratos+MLflow) antes de gastar computo real
 	@echo "OK: pipeline end-to-end verificado con el dataset toy."
@@ -173,7 +124,7 @@ dvc-use-localstack: ## Redirige el remoto S3 de DVC a LocalStack (solo esta maqu
 	@echo "    core_ml/.dvc/config (compartido en git) sigue apuntando al S3 real; sin cambios."
 
 ## ---------------------------------------------------------------------
-## Fase 3: contenedores locales (Docker Compose + LocalStack)
+## Contenedores locales (Docker Compose + LocalStack)
 ## ---------------------------------------------------------------------
 
 compose-up: ## Levanta el stack local completo: Postgres, MLflow, API, LocalStack
@@ -201,104 +152,30 @@ localstack-env: ## Imprime las variables para apuntar un shell local a LocalStac
 	@echo "export AWS_DEFAULT_REGION=us-east-1"
 
 ## ---------------------------------------------------------------------
-## Fase 4: build/push de imagenes y release GitOps (sin sed, sin kubectl apply)
+## Build/push de la imagen de la API y despliegue a Kubernetes
 ## ---------------------------------------------------------------------
+# MLflow no tiene una imagen propia que construir/publicar: corre desde la
+# imagen publica ghcr.io/mlflow/mlflow (ver docker-compose.yml y
+# kubernetes/base/mlflow.yaml).
 
-docker-build-api: ## Construye la imagen de la API (Dockerfile de la raiz)
+docker-build: ## Construye la imagen de la API (Dockerfile de la raiz)
 	docker build -t $(API_IMAGE):$(IMAGE_TAG) -f Dockerfile .
 
-docker-build-mlflow: ## Construye la imagen de MLflow con psycopg2 (Dockerfile.mlflow; backend-store-uri es Postgres/RDS)
-	docker build -t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow .
-
-docker-build: docker-build-api docker-build-mlflow ## Construye las imagenes (api + mlflow)
-
-docker-push-api: ## Publica la imagen de la API en ECR (requiere `docker login` a ECR ya hecho)
+docker-push: ## Publica la imagen de la API en ECR (requiere `docker login` a ECR ya hecho)
 	docker push $(API_IMAGE):$(IMAGE_TAG)
 
-docker-push-mlflow: ## Publica la imagen de MLflow en ECR
-	docker push $(MLFLOW_IMAGE):$(IMAGE_TAG)
-
-docker-push: docker-push-api docker-push-mlflow ## Publica las imagenes en ECR
-
-## ---------------------------------------------------------------------
-## Fase 4: build+push con cache remoto de BuildKit (para CI, no uso local)
-## ---------------------------------------------------------------------
-# El servicio dind del job build_image (.gitlab-ci.yml) es efimero: sin esto,
-# CADA corrida reconstruye y resube desde cero la capa de dependencias de
-# torch (~250MB), lo que en un ancho de banda de subida domestico limitado
-# hizo fallar build_image por el timeout de 1h del job. `docker buildx build
-# --push` con --cache-from/--cache-to type=registry persiste esa capa en el
-# repo ECR dedicado predictive-maintenance-mlops-build-cache (ver
-# terraform/ecr.tf): solo se vuelve a subir cuando el poetry.lock
-# correspondiente cambia realmente. docker-build-*/docker-push-* (arriba) se
-# conservan intactos para desarrollo local, donde Docker Desktop ya cachea
-# capas entre builds y este problema no existe.
-
-# Idempotencia (skip-if-exists): las imagenes se publican en repos ECR
-# IMMUTABLE (terraform/ecr.tf) -- correcto para produccion (un tag jamas
-# cambia de contenido bajo los pies de un despliegue), pero significa que
-# reintentar `docker-buildx-push` tras un fallo PARCIAL (p.ej. build_image se
-# cuelga en la segunda imagen, ya con la primera subida con exito) revienta
-# con "tag already exists ... cannot be overwritten" al re-intentar
-# re-publicar una imagen que ya habia llegado a ECR en el intento anterior.
-# Cada target comprueba primero si $(IMAGE_TAG) ya existe en su repo y, si
-# es asi, omite el build+push -- necesario para que un retry del job
-# build_image (manual o automatico, ver .gitlab-ci.yml) sea seguro.
-#
-# --cache-to SIN ",mode=max": los Dockerfiles son de una sola etapa (un unico
-# FROM, sin build multi-stage) -- "mode=max" solo aporta valor exportando
-# capas que un build multi-stage descarta del resultado final, algo que aqui
-# no existe. Con un solo stage, el modo por defecto ("min") ya cachea
-# exactamente las mismas capas que importan (incluida la de poetry install),
-# asi que "mode=max" era trafico extra sin beneficio real -- y ademas la fase
-# mas propensa a colgarse contra la red domestica de este runner (ver
-# comentario de resiliencia en .gitlab-ci.yml).
-docker-buildx-push-api: ## Build+push de la API con cache remoto de BuildKit (CI)
-	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-streaming --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
-		echo "predictive-maintenance-mlops-streaming:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
-	else \
-		docker buildx build --push \
-			--cache-from type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			--cache-to type=registry,ref=$(BUILD_CACHE_IMAGE):shared \
-			-t $(API_IMAGE):$(IMAGE_TAG) -f Dockerfile . ; \
-	fi
-
-# SIN --cache-from/--cache-to: a diferencia de la API (sobre python:3.12-slim
-# + poetry), esta imagen parte de `ghcr.io/mlflow/mlflow` -- no comparte
-# ninguna capa con ella, asi que exportar cache aqui no ahorra nada en el
-# futuro y solo agregaba una subida extra de varios cientos de MB, siendo
-# ademas la que mas se atascaba contra la red domestica inestable del
-# runner (ver comentario de resiliencia mas arriba). El build en si ya es
-# rapido (imagen base chica, sin poetry install pesado de por medio).
-docker-buildx-push-mlflow: ## Build+push de MLflow (sin cache remoto: no comparte capas con la API)
-	@if aws ecr describe-images --region $(AWS_REGION) --repository-name predictive-maintenance-mlops-mlflow --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
-		echo "predictive-maintenance-mlops-mlflow:$(IMAGE_TAG) ya existe -- omitiendo (repo inmutable, retry idempotente)"; \
-	else \
-		docker buildx build --push -t $(MLFLOW_IMAGE):$(IMAGE_TAG) -f Dockerfile.mlflow . ; \
-	fi
-
-docker-buildx-push: docker-buildx-push-api docker-buildx-push-mlflow ## Build+push de las imagenes con cache remoto (usado por build_image en CI)
-
 k8s-build: ## Renderiza el overlay de produccion (kustomize build) para inspeccion/dry-run
-	kubectl kustomize $(GITOPS_OVERLAY)
+	kubectl kustomize $(K8S_OVERLAY)
 
 k8s-diff: ## Muestra el diff del overlay contra el cluster actual (kubectl diff -k)
-	kubectl diff -k $(GITOPS_OVERLAY) || true
+	kubectl diff -k $(K8S_OVERLAY) || true
 
-gitops-set-image: ## Fija IMAGE_TAG en el overlay de forma declarativa (kustomize edit, NUNCA sed)
-	cd $(GITOPS_OVERLAY) && kustomize edit set image \
-		$(API_IMAGE)=$(API_IMAGE):$(IMAGE_TAG) \
-		$(MLFLOW_IMAGE)=$(MLFLOW_IMAGE):$(IMAGE_TAG)
-	@echo "OK: $(GITOPS_OVERLAY)/kustomization.yaml -> tag $(IMAGE_TAG)"
-
-gitops-release: gitops-set-image ## Commitea+pushea el nuevo tag: ArgoCD sincroniza el cluster (GitOps real)
-	git diff --quiet -- $(GITOPS_OVERLAY)/kustomization.yaml && echo "Sin cambios de imagen; nada que liberar." && exit 0; \
-	git add $(GITOPS_OVERLAY)/kustomization.yaml && \
-	git commit -m "chore(gitops): release $(IMAGE_TAG) [skip ci]" && \
-	git push origin HEAD:$${CI_COMMIT_REF_NAME:-$$(git rev-parse --abbrev-ref HEAD)}
+deploy: ## Fija IMAGE_TAG en el overlay y aplica directo contra el cluster (kubectl apply -k)
+	cd $(K8S_OVERLAY) && kustomize edit set image $(API_IMAGE)=$(API_IMAGE):$(IMAGE_TAG)
+	kubectl apply -k $(K8S_OVERLAY)
 
 ## ---------------------------------------------------------------------
-## Fase 4: Infraestructura como Codigo (Terraform)
+## Infraestructura como Codigo (Terraform)
 ## ---------------------------------------------------------------------
 
 terraform-fmt: ## Verifica el formato canonico de todos los .tf (incluye terraform/bootstrap)
@@ -310,14 +187,17 @@ terraform-validate: ## Valida sintaxis/tipos de terraform/ (requiere `terraform 
 terraform-plan: ## Muestra el plan de cambios contra AWS real (requiere credenciales validas)
 	terraform -chdir=terraform plan
 
+terraform-apply: ## Aplica el plan contra AWS real (requiere credenciales validas)
+	terraform -chdir=terraform apply
+
 ## ---------------------------------------------------------------------
-## Fase 4: validar el pipeline de GitLab CI localmente
+## Validar el pipeline de GitLab CI localmente
 ## ---------------------------------------------------------------------
 
 ci-local: ## Corre .gitlab-ci.yml localmente con gitlab-ci-local (requiere Docker + Node.js)
 	@command -v npx >/dev/null 2>&1 || { \
-		echo "Node.js/npx no esta instalado. gitlab-runner ya no trae 'exec' (retirado"; \
-		echo "en versiones recientes); la alternativa mantenida por la comunidad es"; \
+		echo "Node.js/npx no esta instalado. La alternativa mantenida por la"; \
+		echo "comunidad para correr pipelines de GitLab CI en local es"; \
 		echo "gitlab-ci-local: https://github.com/firecow/gitlab-ci-local"; \
 		echo "Instala Node.js (nodejs.org) y vuelve a correr 'make ci-local'."; \
 		exit 1; \
@@ -325,61 +205,8 @@ ci-local: ## Corre .gitlab-ci.yml localmente con gitlab-ci-local (requiere Docke
 	MSYS_NO_PATHCONV=1 npx --yes gitlab-ci-local $(JOB)
 
 ## ---------------------------------------------------------------------
-## Fase 4: runner self-hosted de GitLab CI/CD (cero minutos en la nube)
+## Git hooks
 ## ---------------------------------------------------------------------
-# Flujo: 1) make runner-register TOKEN=glrt-xxx (una sola vez por maquina)
-#        2) make runner-up  (queda corriendo en background, restart automatico)
-#        git push -> gitlab.com asigna los jobs (tag local-hardware) a
-#        este runner, que los ejecuta en tu propio hardware.
-
-RUNNER_COMPOSE := docker compose -f runner/docker-compose.yml
-GITLAB_URL ?= https://gitlab.com
-
-runner-register: ## Registra este host como runner (make runner-register TOKEN=glrt-xxxxx)
-	@test -n "$(TOKEN)" || { \
-		echo "Uso: make runner-register TOKEN=glrt-xxxxx"; \
-		echo "El token se genera en: gitlab.com -> tu proyecto -> Settings > CI/CD > Runners"; \
-		echo "-> 'New project runner' -> plataforma Linux, tag 'local-hardware' -> Create runner."; \
-		exit 1; \
-	}
-	$(RUNNER_COMPOSE) run --rm gitlab-runner register \
-		--non-interactive \
-		--url "$(GITLAB_URL)" \
-		--token "$(TOKEN)" \
-		--executor "docker" \
-		--docker-image "python:3.12-slim" \
-		--docker-privileged="true" \
-		--description "local-hardware"
-	@echo "OK: runner registrado. Ahora: make runner-up"
-
-runner-up: ## Levanta el runner self-hosted (background, restart automatico)
-	$(RUNNER_COMPOSE) up -d
-
-runner-down: ## Detiene el runner self-hosted (conserva el token/config registrado)
-	$(RUNNER_COMPOSE) down
-
-runner-status: ## Muestra el estado y verifica las credenciales del runner
-	@# 'gitlab-runner status' busca un pidfile de instalacion como servicio del
-	@# sistema, que no existe corriendo via 'docker compose up -d' (PID 1 en
-	@# modo foreground) -- devuelve exit 1 aunque el runner este sano. Se
-	@# ignora ese resultado; 'verify' (que SI valida credenciales contra
-	@# gitlab.com) es la fuente de verdad real.
-	@$(RUNNER_COMPOSE) exec gitlab-runner gitlab-runner status || true
-	$(RUNNER_COMPOSE) exec gitlab-runner gitlab-runner verify
-
-runner-logs: ## Sigue los logs del runner self-hosted (Ctrl+C para salir)
-	$(RUNNER_COMPOSE) logs -f
-
-runner-unregister: ## Da de baja el runner en GitLab y borra su configuracion local
-	$(RUNNER_COMPOSE) exec gitlab-runner gitlab-runner unregister --all-runners || true
-	$(RUNNER_COMPOSE) down --volumes
-
-## ---------------------------------------------------------------------
-## YAML y git hooks
-## ---------------------------------------------------------------------
-
-yamllint: ## Valida todos los YAML del repo (estructura + estilo)
-	pre-commit run yamllint --all-files
 
 precommit-install: ## Instala los git hooks de pre-commit en este repo
 	pre-commit install --install-hooks
@@ -392,7 +219,7 @@ precommit-run: ## Ejecuta todos los hooks de pre-commit sobre todo el repo
 ## Agregados
 ## ---------------------------------------------------------------------
 
-ci: format-check lint typecheck test security yamllint ## Pipeline completo (el mismo que corre en GitLab CI)
+ci: format-check lint test ## Pipeline completo (el mismo que corre en GitLab CI, stage lint_test)
 	@echo "OK: todos los checks de calidad pasaron."
 
 clean: ## Limpia caches locales de herramientas

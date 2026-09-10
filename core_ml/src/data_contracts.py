@@ -1,10 +1,9 @@
 """Contratos de datos (fail fast) para el pipeline de mantenimiento predictivo.
 
 Cada función valida un DataFrame en un punto concreto del pipeline
-(data_processing -> prepare_feast_data -> train) y lanza
+(data_processing -> prepare_training_data -> train) y lanza
 `pandera.errors.SchemaError` inmediatamente si el contrato se rompe, antes
-de invertir cómputo (entrenamiento, llamadas a Feast/MLflow) en datos
-inválidos.
+de invertir cómputo (entrenamiento, llamadas a MLflow) en datos inválidos.
 """
 
 from __future__ import annotations
@@ -59,7 +58,7 @@ LABELED_TELEMETRY_SCHEMA = RAW_TELEMETRY_SCHEMA.add_columns(
 )
 
 # ---------------------------------------------------------------------------
-# 3. Ventanas listas para Feast / entrenamiento (salida de prepare_feast_data)
+# 3. Ventanas listas para entrenamiento (salida de prepare_training_data.py)
 # ---------------------------------------------------------------------------
 WINDOWED_FEATURE_SCHEMA = pa.DataFrameSchema(
     columns={
@@ -74,31 +73,17 @@ WINDOWED_FEATURE_SCHEMA = pa.DataFrameSchema(
 )
 
 # ---------------------------------------------------------------------------
-# 4. Batch ya cargado, listo para entrenar (salida de _load_training_data_via_*
-#    en train.py) -- deliberadamente MAS LAXO que WINDOWED_FEATURE_SCHEMA en
-#    dos puntos donde ambas fuentes de carga divergen genuinamente:
-#
-#    - "created_timestamp" es metadata de ingestion que Feast usa para el
-#      point-in-time join, no una feature de entrenamiento: al pedir
-#      `store.get_historical_features(features=[...])` sin incluirla en
-#      `features`, el DataFrame resultante correctamente no la trae. Exigirla
-#      aqui rompia siempre la ruta "feast" (nunca la ruta "parquet", que lee
-#      el mismo parquet que prepare_feast_data.py escribio con esa columna).
-#    - "event_timestamp": Feast normaliza los timestamps del join a UTC
-#      tz-aware (datetime64[ns, UTC]); el parquet plano los conserva naive
-#      (datetime64[ns]) tal como los genero prepare_feast_data.py. Ninguna
-#      de las dos ventanas horarias importa para entrenar -- no es una
-#      feature del modelo -- asi que aqui solo se exige que sea datetime,
-#      sin fijar tz.
+# 4. Batch ya cargado, listo para entrenar (salida de _load_training_data en
+#    train.py) -- deliberadamente MAS LAXO que WINDOWED_FEATURE_SCHEMA en el
+#    tipo exacto de "event_timestamp": no es una feature del modelo, asi que
+#    alcanza con exigir "datetime de cualquier variante" en vez de fijar un
+#    dtype exacto.
 _TRAINING_BATCH_SCHEMA = pa.DataFrameSchema(
     columns={
         "engine_id": pa.Column(str, checks=pa.Check.str_length(min_value=1), nullable=False),
         # dtype=None (sin anotar) a proposito: pandera compara el dtype
-        # anotado por IGUALDAD EXACTA, y "datetime64[ns]" (parquet plano,
-        # naive) != "datetime64[ns, UTC]" (Feast, tz-aware tras el
-        # point-in-time join) aunque ambos sean perfectamente validos aqui
-        # -- el tz no se usa para nada en el entrenamiento. El Check verifica
-        # que sea datetime de cualquier variante, sin pinnear una sola.
+        # anotado por IGUALDAD EXACTA. El Check de abajo verifica que sea
+        # datetime de cualquier variante, sin pinnear una sola.
         "event_timestamp": pa.Column(
             dtype=None,
             checks=pa.Check(
@@ -149,11 +134,11 @@ def validate_windowed_features(df: pd.DataFrame, expected_length: int) -> pd.Dat
 
 
 def validate_training_batch(df: pd.DataFrame, expected_length: int) -> pd.DataFrame:
-    """Falla rápido si el batch ya cargado (parquet plano o Feast) no es entrenable.
+    """Falla rápido si el batch ya cargado (engine_features.parquet) no es entrenable.
 
-    Usar en train.py, DESPUÉS de `_load_training_data_via_parquet`/`_via_feast`.
-    Para el DataFrame recién escrito por prepare_feast_data.py (con
-    `created_timestamp` y timestamps naive), usar `validate_windowed_features`.
+    Usar en train.py, DESPUÉS de `_load_training_data`. Para el DataFrame
+    recién escrito por prepare_training_data.py, usar
+    `validate_windowed_features`.
     """
     validated = _TRAINING_BATCH_SCHEMA.validate(df, lazy=True)
 

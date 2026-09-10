@@ -16,12 +16,10 @@ _ENV_VAR_PATTERN = re.compile(r"^\$\{([^}^{]+)\}$")
 # Kubernetes TODOS llegan inyectados por kubernetes/base/configmap.yaml, asi
 # que estos defaults solo se usan al ejecutar en un portatil.
 #
-# El fallback anterior era `f"localhost:{'9092' if 'KAFKA' in env_var else '5000'}"`,
-# que devolvia "localhost:5000" para MLFLOW_TRACKING_URI -- una URI SIN
-# esquema, que MLflow rechaza con UnsupportedModelRegistryStoreURIException.
-# Consecuencia: `make smoke-test` / `make train-toy` fallaban siempre salvo
-# que el operador exportase la variable a mano, pese a que README y guia los
-# documentan como comandos autonomos.
+# El valor debe ser una URI CON esquema: MLflow rechaza un host:puerto sin
+# esquema con UnsupportedModelRegistryStoreURIException, lo que haria fallar
+# `make smoke-test` / `make train-toy` pese a documentarse como comandos
+# autonomos.
 _LOCAL_DEFAULTS = {
     "MLFLOW_TRACKING_URI": "http://localhost:5000",
 }
@@ -49,10 +47,10 @@ def _resolve_env_placeholders(value: Any) -> Any:
         if resolved is not None:
             return resolved
         if env_var not in _LOCAL_DEFAULTS:
-            # FAIL FAST: antes se inventaba un "localhost:5000" para
-            # CUALQUIER variable desconocida. Un placeholder mal escrito en
-            # config.yaml se resolvia silenciosamente a un valor absurdo en
-            # vez de avisar.
+            # FAIL FAST: una variable de entorno desconocida se reporta en
+            # vez de resolverse silenciosamente a un valor por defecto
+            # arbitrario. Un placeholder mal escrito en config.yaml debe
+            # fallar de forma explícita, no producir un valor absurdo.
             raise ValueError(
                 f"La variable de entorno {env_var!r}, referenciada en config.yaml, "
                 f"no esta definida y no tiene un valor por defecto de desarrollo. "

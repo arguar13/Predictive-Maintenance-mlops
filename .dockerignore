@@ -22,11 +22,10 @@ data_toy/
 .dvc/
 .dvcignore
 
-# IaC / GitOps / infra local: ninguna imagen de aplicacion los necesita
-# en su build context (evita enviarlos al daemon de Docker sin motivo)
+# IaC / infra local: ninguna imagen de aplicacion los necesita en su build
+# context (evita enviarlos al daemon de Docker sin motivo)
 terraform/
 kubernetes/
-gitops/
 localstack/
 
 # Logs y testing
@@ -40,7 +39,6 @@ htmlcov/
 
 # Herramientas de calidad local (no necesarias dentro de la imagen)
 .pre-commit-config.yaml
-.yamllint.yaml
 
 # IDEs y SO
 .vscode/

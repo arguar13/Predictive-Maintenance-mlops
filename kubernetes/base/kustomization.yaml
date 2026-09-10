@@ -4,11 +4,10 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - serviceaccount.yaml
-  - externalsecret.yaml
+  - secret.yaml
   - configmap.yaml
   - mlflow.yaml
   - api.yaml
-  - networkpolicy.yaml
   - hpa.yaml
 
 labels:

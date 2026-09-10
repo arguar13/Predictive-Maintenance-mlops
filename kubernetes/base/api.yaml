@@ -27,7 +27,7 @@ spec:
       containers:
         - name: api
           # El tag lo fija el overlay (kustomize edit set image), nunca sed.
-          image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-streaming:latest
+          image: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-api:latest
           imagePullPolicy: Always
           command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
           # KSV-0014 / KSV-0001 / KSV-0003: sistema de archivos raiz de solo
@@ -44,9 +44,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: mlops-config
-            # API_KEY: /predict ahora exige autenticacion (ver api/main.py
-            # require_api_key). Antes este Deployment no montaba
-            # mlops-secrets porque la API no consumia ningun secreto.
+            # API_KEY: /predict exige autenticacion (ver api/main.py
+            # require_api_key). Viene de kubernetes/base/secret.yaml, un
+            # Secret plano de Kubernetes (ver ese archivo para como
+            # sobreescribir el valor real antes de desplegar).
             - secretRef:
                 name: mlops-secrets
           env:

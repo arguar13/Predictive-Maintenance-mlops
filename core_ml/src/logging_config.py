@@ -39,7 +39,7 @@ def configure_logging(service_name: str) -> structlog.stdlib.BoundLogger:
         cache_logger_on_first_use=True,
     )
 
-    # Los logs de librerias de terceros (uvicorn, kafka, botocore...) usan
+    # Los logs de librerias de terceros (mlflow, botocore, urllib3...) usan
     # logging estandar: este formatter los emite como el mismo JSON, en vez
     # de mezclar texto plano con lineas JSON en la misma salida.
     formatter = structlog.stdlib.ProcessorFormatter(

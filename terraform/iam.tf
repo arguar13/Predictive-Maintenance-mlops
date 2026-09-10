@@ -1,72 +1,35 @@
 # ============================================================
-# Rol para acceso desde EKS a S3 + Secrets Manager (mlops-env:mlops-sa)
+# Acceso de los nodos de EKS a S3 (artefactos de MLflow, remoto de DVC)
+#
+# El rol de instancia del node group (compartido por todos los pods que
+# corren en esos nodos) recibe permisos directos sobre el bucket de
+# artefactos via `iam_role_additional_policies` (ver terraform/eks.tf), en
+# vez de un rol IRSA granular por Service Account. Es menos aislado --
+# cualquier pod del nodo podria, en teoria, usar este permiso, no solo
+# mlflow/api -- pero mas simple de operar y depurar. Un rol IRSA dedicado
+# por servicio es la mejora obvia si el aislamiento por pod se vuelve un
+# requisito.
 # ============================================================
-module "iam_eks_role" {
-  source    = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version   = "~> 5.30"
-  role_name = "${var.project_name}-s3-access-role-v2"
-
-  role_policy_arns = {
-    policy = aws_iam_policy.s3_access_policy_v2.arn
-  }
-
-  oidc_providers = {
-    main = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["mlops-env:mlops-sa"]
-    }
-  }
-}
-
-resource "aws_iam_policy" "s3_access_policy_v2" {
-  name        = "${var.project_name}-s3-policy-v2"
-  description = "Permisos granulares para que MLflow/API/consumer en EKS accedan a S3 y Secrets Manager"
+resource "aws_iam_policy" "node_s3_access" {
+  name        = "${var.project_name}-node-s3-access"
+  description = "Acceso de los nodos EKS al bucket de artefactos (MLflow/DVC)"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid = "S3ArtifactsAccess"
+        Sid    = "S3ArtifactsAccess"
+        Effect = "Allow"
         Action = [
           "s3:ListBucket",
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject"
         ]
-        Effect = "Allow"
         Resource = [
           aws_s3_bucket.mlflow_artifacts.arn,
           "${aws_s3_bucket.mlflow_artifacts.arn}/*"
         ]
-      },
-      {
-        # Consumido por el ExternalSecret de kubernetes/base/externalsecret.yaml
-        # (ClusterSecretStore autenticado via este mismo rol IRSA).
-        Sid = "SecretsManagerRead"
-        Action = [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret"
-        ]
-        Effect = "Allow"
-        Resource = [
-          aws_secretsmanager_secret.db_credentials.arn,
-          aws_secretsmanager_secret.api_key.arn
-        ]
-      },
-      {
-        # Sin esto, con el bucket y los secretos cifrados con la CMK del
-        # proyecto (terraform/kms.tf), cada s3:GetObject/PutObject y cada
-        # secretsmanager:GetSecretValue falla con AccessDenied: KMS exige
-        # permiso explicito sobre la clave ADEMAS del permiso sobre el
-        # recurso.
-        Sid = "KmsProjectKey"
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey",
-          "kms:DescribeKey"
-        ]
-        Effect   = "Allow"
-        Resource = [aws_kms_key.mlops.arn]
       }
     ]
   })
@@ -90,13 +53,6 @@ resource "aws_iam_openid_connect_provider" "gitlab" {
 
 # ============================================================
 # Rol para GitLab CI/CD (GitLabCIRole)
-#
-# ANTES: assume_role_policy confiaba en "Service: ec2.amazonaws.com", pero
-# .gitlab-ci.yml usa `aws sts assume-role-with-web-identity` con un token
-# OIDC de GitLab -- esa combinacion NUNCA pudo autenticar (un trust policy
-# de servicio EC2 no acepta AssumeRoleWithWebIdentity). Ahora el trust
-# policy es el OIDC provider de arriba, con el "sub" del token limitado a
-# este proyecto de GitLab.
 # ============================================================
 resource "aws_iam_role" "gitlab_ci_role" {
   name = "GitLabCIRole"
@@ -126,15 +82,14 @@ resource "aws_iam_role" "gitlab_ci_role" {
   })
 }
 
-# Politica propia y acotada: SOLO push/pull a los repositorios ECR de este
-# proyecto y acceso al bucket de DVC/MLflow. Ya NO incluye permisos de EKS:
-# con GitOps (ArgoCD), CI deja de tocar el cluster directamente (ver
-# gitops/argocd/application.yaml), asi que ya no necesita
-# AmazonEKSClusterPolicy -- reduce la superficie de lo que un pipeline
-# comprometido podria hacer.
+# Politica del pipeline de CI: push/pull a ECR, lectura/escritura del bucket
+# de artefactos (DVC), y permiso para autenticarse contra el cluster de EKS
+# -- el stage "deploy" de .gitlab-ci.yml corre `kubectl apply -k` directo
+# contra el cluster, asi que este rol necesita poder generar un kubeconfig
+# valido.
 resource "aws_iam_policy" "gitlab_ci_policy" {
   name        = "${var.project_name}-gitlab-ci-policy"
-  description = "Permisos minimos para el pipeline de CI: push/pull de ECR y acceso al bucket de artefactos"
+  description = "Permisos minimos para el pipeline de CI: ECR, S3 y despliegue a EKS"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -146,8 +101,6 @@ resource "aws_iam_policy" "gitlab_ci_policy" {
         Resource = "*"
       },
       {
-        # build_cache: repo de cache remoto de BuildKit (docker buildx
-        # --cache-from/--cache-to), no una imagen de release.
         Sid    = "EcrPushPull"
         Effect = "Allow"
         Action = [
@@ -157,21 +110,9 @@ resource "aws_iam_policy" "gitlab_ci_policy" {
           "ecr:PutImage",
           "ecr:InitiateLayerUpload",
           "ecr:UploadLayerPart",
-          "ecr:CompleteLayerUpload",
-          # Sin esto, el chequeo skip-if-exists de `make docker-buildx-push-*`
-          # (Makefile: `aws ecr describe-images` antes de cada push, necesario
-          # porque los repos son IMMUTABLE y un retry de build_image no puede
-          # re-publicar una imagen ya subida en un intento previo) fallaba con
-          # AccessDenied -- indistinguible en el `if` de un "tag no existe",
-          # asi que el reintento SIEMPRE volvia a intentar el push y reventaba
-          # contra el mismo error de tag inmutable que se queria evitar.
-          "ecr:DescribeImages"
+          "ecr:CompleteLayerUpload"
         ]
-        Resource = [
-          aws_ecr_repository.streaming_repo.arn,
-          aws_ecr_repository.mlflow_repo.arn,
-          aws_ecr_repository.build_cache.arn
-        ]
+        Resource = [aws_ecr_repository.api_repo.arn]
       },
       {
         Sid    = "S3ArtifactsAccess"
@@ -187,19 +128,12 @@ resource "aws_iam_policy" "gitlab_ci_policy" {
         ]
       },
       {
-        # Sin esto, con el bucket y los secretos cifrados con la CMK del
-        # proyecto (terraform/kms.tf), cada s3:GetObject/PutObject y cada
-        # secretsmanager:GetSecretValue falla con AccessDenied: KMS exige
-        # permiso explicito sobre la clave ADEMAS del permiso sobre el
-        # recurso.
-        Sid = "KmsProjectKey"
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey",
-          "kms:DescribeKey"
-        ]
+        # `aws eks update-kubeconfig` (stage "deploy") necesita poder leer
+        # los metadatos del cluster para armar el kubeconfig.
+        Sid      = "EksDescribe"
         Effect   = "Allow"
-        Resource = [aws_kms_key.mlops.arn]
+        Action   = ["eks:DescribeCluster"]
+        Resource = [module.eks.cluster_arn]
       }
     ]
   })
@@ -208,6 +142,28 @@ resource "aws_iam_policy" "gitlab_ci_policy" {
 resource "aws_iam_role_policy_attachment" "gitlab_ci_policy_attachment" {
   role       = aws_iam_role.gitlab_ci_role.name
   policy_arn = aws_iam_policy.gitlab_ci_policy.arn
+}
+
+# Autorizacion DENTRO de Kubernetes (RBAC) para que GitLabCIRole pueda
+# desplegar: autenticarse contra AWS (arriba) no alcanza, EKS tambien exige
+# un access entry explicito -- mismo mecanismo que
+# enable_cluster_creator_admin_permissions en eks.tf usa para quien aplica
+# Terraform. ClusterAdminPolicy es deliberadamente amplio para mantener esto
+# simple; acotarlo a un Role/RoleBinding de namespace es la mejora obvia si
+# el pipeline necesita permisos mas finos.
+resource "aws_eks_access_entry" "gitlab_ci" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.gitlab_ci_role.arn
+}
+
+resource "aws_eks_access_policy_association" "gitlab_ci_admin" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.gitlab_ci_role.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
 }
 
 output "gitlab_ci_role_arn" {

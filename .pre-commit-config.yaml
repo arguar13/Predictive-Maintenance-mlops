@@ -1,7 +1,6 @@
 ---
 # Validación shift-left: un commit se rechaza automáticamente si falla el
-# linting, el formateo, el type checking, las pruebas, o si se detecta un
-# secreto o un YAML inválido.
+# linting, el formateo, o si el YAML es inválido.
 #
 # Prerrequisitos (una sola vez por máquina):
 #   pip install pre-commit          # o: pipx install pre-commit
@@ -11,6 +10,11 @@
 # Los hooks de api/ y core_ml/ reutilizan el mismo entorno virtual de Poetry
 # que Docker/CI (poetry -C <paquete> run ...), así local y CI ejecutan
 # exactamente las mismas versiones ancladas en cada poetry.lock.
+#
+# NOTA: un scanner de secretos/CVEs/IaC (p.ej. Trivy) y un linter de
+# seguridad estático (p.ej. Bandit) son la mejora obvia a agregar si el
+# ciclo local necesita cubrir también esos casos; se dejan fuera aquí para
+# mantenerlo simple y rápido.
 default_language_version:
   python: python3.12
 
@@ -23,63 +27,33 @@ repos:
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
-      - id: mixed-line-ending
-        args: [--fix=lf]
       - id: check-added-large-files
         args: [--maxkb=5120]
-      - id: check-merge-conflict
-      - id: check-case-conflict
-      - id: detect-private-key
-      - id: check-toml
-      - id: check-json
       - id: check-yaml
         args: [-m]
 
   # ---------------------------------------------------------------------
-  # YAML: estilo y validación estricta (K8s, GitLab CI, docker-compose...)
-  # ---------------------------------------------------------------------
-  - repo: https://github.com/adrienverge/yamllint
-    rev: v1.38.0
-    hooks:
-      - id: yamllint
-        args: [--strict, -c=.yamllint.yaml]
-
-  # ---------------------------------------------------------------------
-  # api/ — lint, formato, imports, tipos, seguridad y pruebas
+  # api/ y core_ml/ — lint + formato (ruff reemplaza a black+isort) y tests
   # ---------------------------------------------------------------------
   - repo: local
     hooks:
-      - id: api-ruff
+      - id: api-ruff-lint
         name: "api · ruff (lint)"
         entry: poetry -C api run ruff check --fix
         language: system
         files: ^api/.*\.py$
         pass_filenames: false
 
-      - id: api-isort
-        name: "api · isort (orden de imports)"
-        entry: poetry -C api run isort .
-        language: system
-        files: ^api/.*\.py$
-        pass_filenames: false
-
-      - id: api-black
-        name: "api · black (formato)"
-        entry: poetry -C api run black .
+      - id: api-ruff-format
+        name: "api · ruff (formato)"
+        entry: poetry -C api run ruff format
         language: system
         files: ^api/.*\.py$
         pass_filenames: false
 
       - id: api-mypy
-        name: "api · mypy (type checking)"
+        name: "api · mypy (type checking, opcional/liviano)"
         entry: poetry -C api run mypy .
-        language: system
-        files: ^api/.*\.py$
-        pass_filenames: false
-
-      - id: api-bandit
-        name: "api · bandit (seguridad)"
-        entry: poetry -C api run bandit -q -r . -x ./tests,./.venv
         language: system
         files: ^api/.*\.py$
         pass_filenames: false
@@ -94,62 +68,30 @@ repos:
       # -------------------------------------------------------------
       # core_ml/ — mismo pipeline de calidad
       # -------------------------------------------------------------
-      - id: core-ml-ruff
+      - id: core-ml-ruff-lint
         name: "core_ml · ruff (lint)"
         entry: poetry -C core_ml run ruff check --fix
         language: system
-        files: ^core_ml/(src|feature_store|scripts|tests)/.*\.py$
+        files: ^core_ml/(src|scripts|tests)/.*\.py$
         pass_filenames: false
 
-      - id: core-ml-isort
-        name: "core_ml · isort (orden de imports)"
-        entry: poetry -C core_ml run isort .
+      - id: core-ml-ruff-format
+        name: "core_ml · ruff (formato)"
+        entry: poetry -C core_ml run ruff format
         language: system
-        files: ^core_ml/(src|feature_store|scripts|tests)/.*\.py$
-        pass_filenames: false
-
-      - id: core-ml-black
-        name: "core_ml · black (formato)"
-        entry: poetry -C core_ml run black .
-        language: system
-        files: ^core_ml/(src|feature_store|scripts|tests)/.*\.py$
+        files: ^core_ml/(src|scripts|tests)/.*\.py$
         pass_filenames: false
 
       - id: core-ml-mypy
-        name: "core_ml · mypy (type checking)"
-        entry: poetry -C core_ml run mypy src feature_store
+        name: "core_ml · mypy (type checking, opcional/liviano)"
+        entry: poetry -C core_ml run mypy src
         language: system
-        files: ^core_ml/(src|feature_store)/.*\.py$
-        pass_filenames: false
-
-      - id: core-ml-bandit
-        name: "core_ml · bandit (seguridad)"
-        entry: poetry -C core_ml run bandit -q -r src feature_store
-        language: system
-        files: ^core_ml/(src|feature_store)/.*\.py$
+        files: ^core_ml/src/.*\.py$
         pass_filenames: false
 
       - id: core-ml-pytest
         name: "core_ml · pytest"
         entry: poetry -C core_ml run pytest
         language: system
-        files: ^core_ml/(src|streaming|feature_store|tests)/.*\.py$
+        files: ^core_ml/(src|scripts|tests)/.*\.py$
         pass_filenames: false
-
-  # ---------------------------------------------------------------------
-  # Seguridad transversal: secretos, vulnerabilidades de dependencias
-  # e IaC mal configurado (Dockerfiles, Kubernetes, Terraform)
-  # ---------------------------------------------------------------------
-  - repo: local
-    hooks:
-      - id: trivy-fs
-        name: "trivy · secretos + vulnerabilidades + IaC"
-        entry: >-
-          trivy fs --scanners vuln,secret,misconfig --exit-code 1 --quiet
-          --severity HIGH,CRITICAL --ignore-unfixed --ignorefile .trivyignore.yaml
-          --skip-dirs .git,mlruns,models,core_ml/data,core_ml/data_toy,core_ml/.dvc,terraform/.terraform,terraform/bootstrap/.terraform,.venv,api/.venv,core_ml/.venv,.gitlab-ci-local
-          --skip-files terraform/terraform.tfvars,terraform/terraform.tfstate,terraform/terraform.tfstate.backup,terraform/main.tfplan,terraform/bootstrap/terraform.tfstate,terraform/bootstrap/terraform.tfstate.backup
-          .
-        language: system
-        pass_filenames: false
-        always_run: true

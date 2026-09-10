@@ -49,5 +49,5 @@ htmlcov/
 # llevan embebida una copia del config y de los valores sensibles resueltos.
 *.tfplan
 
-# gitlab-ci-local (Fase 4: validacion local del pipeline de CI)
+# gitlab-ci-local (validacion local del pipeline de CI)
 .gitlab-ci-local/

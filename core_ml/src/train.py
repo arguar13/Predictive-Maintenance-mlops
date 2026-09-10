@@ -5,14 +5,10 @@ Cada ejecución queda ligada, de forma inequívoca, a la tupla:
     Container Image Tag
 a través de tags/params del run de MLflow (ver `_build_lineage_tags`).
 
-Modos de carga de datos (--data-source):
-  * "feast"   (por defecto, producción): lee las features materializadas vía
-    Feast Offline Store (S3 + point-in-time join). Requiere credenciales AWS.
-  * "parquet" (toy / smoke test local): lee engine_features.parquet
-    directamente del disco, sin Feast/S3/Redis. Es el modo usado para
-    validar el pipeline end-to-end en segundos, con el dataset toy
-    versionado con DVC, antes de gastar cómputo real (GPU) con el dataset
-    completo.
+Carga de datos: lee `engine_features.parquet` directamente del disco (ver
+`prepare_training_data.py`, que lo genera a partir de los .txt crudos de
+C-MAPSS). Mismo camino para el dataset toy (smoke test local, segundos, sin
+GPU) y para el dataset completo (entrenamiento real).
 
 El modelo y el scaler NUNCA quedan como archivos sueltos: el modelo se
 registra en el MLflow Model Registry y el scaler se loguea como artefacto
@@ -95,8 +91,8 @@ class ConvTransformer(nn.Module):
     InceptionTime, Vanilla Transformer, PatchTST y el FCN baseline. Se omiten
     las ramas de features estaticas/categoricas del benchmark original
     (embedding de "dataset_id", features numericas estaticas): el pipeline
-    de Feast de este proyecto solo produce `windowed_features`, sin esas
-    columnas adicionales.
+    de preparación de datos de este proyecto solo produce `windowed_features`,
+    sin esas columnas adicionales.
     """
 
     def __init__(
@@ -183,13 +179,12 @@ def _get_container_image_tag() -> str:
     return os.environ.get("IMAGE_TAG") or os.environ.get("CI_COMMIT_SHA") or "local-dev"
 
 
-def _build_lineage_tags(data_dir: str, data_source: str) -> dict[str, str]:
+def _build_lineage_tags(data_dir: str) -> dict[str, str]:
     return {
         "git_commit_sha": _get_git_commit_sha(),
         "dvc_data_hash": _get_dvc_data_hash(data_dir),
         "dvc_data_dir": data_dir,
         "container_image_tag": _get_container_image_tag(),
-        "data_source": data_source,
     }
 
 
@@ -198,39 +193,14 @@ def _build_lineage_tags(data_dir: str, data_source: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _load_training_data_via_parquet(data_path: Path) -> pd.DataFrame:
+def _load_training_data(data_path: Path) -> pd.DataFrame:
     parquet_path = data_path / "engine_features.parquet"
     if not parquet_path.exists():
         raise FileNotFoundError(
             f"No se encontró {parquet_path}. Ejecuta antes:\n"
-            f"  poetry run python src/prepare_feast_data.py --data-dir {data_path.name}"
+            f"  poetry run python src/prepare_training_data.py --data-dir {data_path.name}"
         )
     return pd.read_parquet(parquet_path)
-
-
-def _load_training_data_via_feast(data_path: Path, feature_store_path: Path) -> pd.DataFrame:
-    from feast import FeatureStore  # import perezoso: solo requerido en modo feast
-
-    entity_path = data_path / "training_entities.parquet"
-    if not entity_path.exists():
-        raise FileNotFoundError(
-            f"No se encontró el Entity DataFrame en {entity_path}. "
-            "Debes ejecutar 'prepare_feast_data.py' primero."
-        )
-
-    log.info("feast_offline_store_extraction_started")
-    store = FeatureStore(repo_path=str(feature_store_path))
-
-    log.info("loading_entities", entity_path=str(entity_path))
-    entity_df = pd.read_parquet(entity_path)
-
-    return store.get_historical_features(
-        entity_df=entity_df,
-        features=[
-            "engine_sensor_window_features:windowed_features",
-            "engine_sensor_window_features:failure_type",
-        ],
-    ).to_df()
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +271,6 @@ def _evaluate_quality_gate(
 
 def train_pipeline(
     data_dir: str = "data",
-    data_source: str = "feast",
     epochs: int = 3,
     learning_rate: float = 0.001,
     batch_size: int = 64,
@@ -323,26 +292,15 @@ def train_pipeline(
     mlflow.set_experiment("Predictive_Maintenance_FCN")
 
     data_path = BASE_DIR / data_dir
-    feature_store_path = BASE_DIR / "feature_store"
 
-    log.info("loading_training_data", data_path=str(data_path), data_source=data_source)
-    if data_source == "parquet":
-        training_data = _load_training_data_via_parquet(data_path)
-    elif data_source == "feast":
-        training_data = _load_training_data_via_feast(data_path, feature_store_path)
-    else:
-        raise ValueError(f"data_source desconocido: {data_source!r} (usa 'feast' o 'parquet')")
+    log.info("loading_training_data", data_path=str(data_path))
+    training_data = _load_training_data(data_path)
 
     if len(training_data) == 0:
         raise ValueError(f"El dataset de entrenamiento en {data_path} está vacío.")
 
-    # FAIL FAST: valida el contrato de las ventanas antes de construir tensores
-    # y de gastar cómputo de entrenamiento. validate_training_batch (no
-    # validate_windowed_features): a diferencia del parquet que escribe
-    # prepare_feast_data.py, el batch ya cargado no trae "created_timestamp"
-    # cuando viene de Feast (metadata de ingestion, no una feature pedida en
-    # get_historical_features) y su "event_timestamp" es tz-aware (Feast
-    # normaliza a UTC en el join), no naive.
+    # FAIL FAST: valida el contrato del batch antes de construir tensores y
+    # de gastar cómputo de entrenamiento (ver data_contracts.py).
     sample_array_length = len(training_data["windowed_features"].iloc[0])
     training_data = validate_training_batch(training_data, expected_length=sample_array_length)
 
@@ -385,11 +343,11 @@ def train_pipeline(
     criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float32))
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    lineage_tags = _build_lineage_tags(data_dir, data_source)
+    lineage_tags = _build_lineage_tags(data_dir)
     f2_threshold = config["monitoring"]["f2_weighted_threshold"]
     critical_recall_threshold = config["monitoring"]["critical_recall_threshold"]
 
-    with mlflow.start_run(run_name=f"ConvTransformer_Training_{data_source}") as run:
+    with mlflow.start_run(run_name="ConvTransformer_Training") as run:
         mlflow.set_tags(lineage_tags)
         mlflow.log_params(
             {
@@ -590,7 +548,6 @@ def train_pipeline(
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--data-source", choices=["feast", "parquet"], default="feast")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument(
         "--patience",
@@ -616,7 +573,6 @@ if __name__ == "__main__":
     args = _parse_args()
     train_pipeline(
         data_dir=args.data_dir,
-        data_source=args.data_source,
         epochs=args.epochs,
         patience=args.patience,
         learning_rate=args.learning_rate,

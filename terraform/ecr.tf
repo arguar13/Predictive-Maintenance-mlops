@@ -1,37 +1,32 @@
-# NOTA: el nombre "-streaming" es historico (ya existe en AWS con este
-# nombre); en la practica esta imagen es la de la API (ver Dockerfile en la
-# raiz y kubernetes/base/api.yaml). No se renombra para no forzar un
-# destroy+recreate de un recurso ya provisionado.
-resource "aws_ecr_repository" "streaming_repo" {
-  name = "${var.project_name}-streaming"
+# Unico repo ECR de este proyecto: MLflow corre desde la imagen publica
+# ghcr.io/mlflow/mlflow (ver kubernetes/base/mlflow.yaml y docker-compose.yml)
+# en vez de una imagen propia, asi que no hace falta un repo dedicado para
+# ella. Tampoco hay un repo de cache remoto de BuildKit: el pipeline de CI
+# (.gitlab-ci.yml) usa un `docker build` + `docker push` simple.
+resource "aws_ecr_repository" "api_repo" {
+  name = "${var.project_name}-api"
   # AWS-0031 (HIGH): tags inmutables. Con tags mutables, cualquiera con
   # permiso de push puede reemplazar el contenido de un tag ya desplegado
-  # (incluido el commit SHA que ArgoCD tiene fijado en el overlay) sin dejar
-  # rastro. Con IMMUTABLE, un tag publicado es una referencia permanente:
-  # re-publicar el mismo SHA falla en voz alta en vez de sobrescribir en
-  # silencio. Encaja con el esquema de tags del proyecto, que ya usa el
-  # commit SHA (Makefile: IMAGE_TAG), nunca "latest", en un release real.
+  # (incluido el commit SHA que el overlay de Kustomize tiene fijado) sin
+  # dejar rastro. Con IMMUTABLE, un tag publicado es una referencia
+  # permanente: re-publicar el mismo SHA falla en voz alta en vez de
+  # sobrescribir en silencio.
   image_tag_mutability = "IMMUTABLE"
-  # force_destroy: este proyecto pasa por ciclos destroy/apply frecuentes
-  # (entorno de curso, no produccion real) -- sin esto, "terraform destroy"
-  # falla si el repo tiene alguna imagen publicada, y hay que vaciarlo a mano
-  # con la AWS CLI antes de poder destruir.
+  # force_delete: este proyecto pasa por ciclos destroy/apply frecuentes
+  # (entorno de aprendizaje, no produccion real) -- sin esto, "terraform
+  # destroy" falla si el repo tiene alguna imagen publicada, y hay que
+  # vaciarlo a mano con la AWS CLI antes de poder destruir.
   force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true
   }
 
-  # AWS-0033: cifrado con la CMK del proyecto en vez de la clave gestionada
-  # por AWS, igual que S3 y Secrets Manager.
-  encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.mlops.arn
-  }
+  # Cifrado con la clave por defecto de ECR (AES256 gestionada por AWS).
 }
 
 resource "aws_ecr_lifecycle_policy" "repo_cleanup" {
-  repository = aws_ecr_repository.streaming_repo.name
+  repository = aws_ecr_repository.api_repo.name
 
   policy = jsonencode({
     rules = [{
@@ -47,103 +42,8 @@ resource "aws_ecr_lifecycle_policy" "repo_cleanup" {
       }
     }]
   })
-}
-
-# Imagen de MLflow (Dockerfile.mlflow): la imagen publica ghcr.io/mlflow/mlflow
-# no trae psycopg2 instalado -- el backend-store-uri de kubernetes/base/mlflow.yaml
-# es Postgres (RDS), asi que el server crashea con ModuleNotFoundError:
-# psycopg2 al arrancar. Dockerfile.mlflow parte de la misma imagen base y le
-# agrega psycopg2-binary (ya usado tal cual por el servicio "mlflow" de
-# docker-compose.yml); aqui se publica a ECR para reutilizarla en EKS.
-resource "aws_ecr_repository" "mlflow_repo" {
-  name                 = "${var.project_name}-mlflow"
-  image_tag_mutability = "IMMUTABLE"
-  force_delete         = true
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.mlops.arn
-  }
-}
-
-resource "aws_ecr_lifecycle_policy" "mlflow_repo_cleanup" {
-  repository = aws_ecr_repository.mlflow_repo.name
-
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Mantener solo las ultimas 10 imagenes"
-      selection = {
-        tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 10
-      }
-      action = {
-        type = "expire"
-      }
-    }]
-  })
-}
-
-# Cache remoto de BuildKit (docker buildx --cache-from/--cache-to type=registry),
-# NO imagenes de release: build_image reconstruye las imagenes desde cero
-# en cada corrida porque el servicio dind del job es efimero (sin cache de
-# capas entre ejecuciones), asi que la capa de dependencias de torch
-# (~250MB) se volvia a subir entera cada vez -- con un ancho de banda de
-# subida domestico limitado, eso hizo fallar build_image por timeout de 1h
-# del job mas de una vez. Con cache remoto, esa capa solo se sube de nuevo
-# cuando el poetry.lock correspondiente cambia.
-# MUTABLE (a diferencia de los repos de arriba): un tag de cache se
-# reescribe en cada build por diseño (--cache-to ... ,mode=max), y con
-# IMMUTABLE ECR rechazaria ese push. No compromete la garantia de
-# inmutabilidad de los repos de release: este repo nunca se despliega,
-# solo lo lee `docker buildx build --cache-from`.
-resource "aws_ecr_repository" "build_cache" {
-  name                 = "${var.project_name}-build-cache"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.mlops.arn
-  }
-}
-
-resource "aws_ecr_lifecycle_policy" "build_cache_cleanup" {
-  repository = aws_ecr_repository.build_cache.name
-
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Mantener solo las ultimas 10 imagenes de cache por tag"
-      selection = {
-        tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 10
-      }
-      action = {
-        type = "expire"
-      }
-    }]
-  })
-}
-
-output "ecr_build_cache_repository_url" {
-  value = aws_ecr_repository.build_cache.repository_url
-}
-
-output "ecr_mlflow_repository_url" {
-  value = aws_ecr_repository.mlflow_repo.repository_url
 }
 
 output "ecr_api_repository_url" {
-  value = aws_ecr_repository.streaming_repo.repository_url
+  value = aws_ecr_repository.api_repo.repository_url
 }

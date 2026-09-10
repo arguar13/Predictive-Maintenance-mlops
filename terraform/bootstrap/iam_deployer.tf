@@ -21,10 +21,10 @@ resource "aws_iam_group" "deployers" {
   path = "/mlops/"
 }
 
-# AdministratorAccess: el stack de terraform/ provisiona VPC, EKS (+ IRSA),
-# RDS, S3, ECR, Secrets Manager, CloudWatch Logs y crea roles/politicas IAM
-# y un OIDC provider. Acotar eso a mano produce una
-# politica gigante, fragil y que hay que reeditar con cada `terraform apply`.
+# AdministratorAccess: el stack de terraform/ provisiona VPC, EKS, RDS, S3,
+# ECR, CloudWatch Logs y crea roles/politicas IAM y un OIDC provider.
+# Acotar eso a mano produce una politica gigante, fragil y que hay que
+# reeditar con cada `terraform apply`.
 # El limite real de blast radius aqui no es la politica, es que esta
 # identidad SI se puede rotar, auditar por nombre en CloudTrail y revocar en
 # segundos -- ninguna de las tres cosas es cierta para root.

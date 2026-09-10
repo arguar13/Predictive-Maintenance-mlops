@@ -30,12 +30,11 @@ def test_load_config_resolves_env_var(tmp_path, monkeypatch):
 
 
 def test_load_config_default_mlflow_uri_has_a_scheme(tmp_path, monkeypatch):
-    """Regresion: el default de MLFLOW_TRACKING_URI debe ser una URI valida.
+    """El default de MLFLOW_TRACKING_URI debe ser una URI valida, CON esquema.
 
-    El fallback anterior era `f"localhost:{'9092' if 'KAFKA' in env_var else '5000'}"`,
-    que producia "localhost:5000" -- SIN esquema. MLflow lo rechaza con
+    MLflow rechaza un host:puerto sin esquema con
     UnsupportedModelRegistryStoreURIException, de modo que `make smoke-test`
-    y `make train-toy` fallaban siempre salvo que la variable estuviese
+    y `make train-toy` fallarian siempre salvo que la variable estuviese
     exportada a mano, pese a documentarse como comandos autonomos.
     """
     config_file = tmp_path / "config.yaml"
@@ -51,9 +50,9 @@ def test_load_config_default_mlflow_uri_has_a_scheme(tmp_path, monkeypatch):
 def test_load_config_fails_fast_on_unknown_env_var(tmp_path, monkeypatch):
     """FAIL FAST: una variable DESCONOCIDA no se inventa, se reporta.
 
-    Antes, cualquier placeholder mal escrito se resolvia silenciosamente a
-    "localhost:5000" y el error aparecia mucho despues, sin relacion
-    aparente con su causa.
+    Un placeholder mal escrito en config.yaml debe fallar de forma
+    explícita en el momento, no resolverse silenciosamente a un valor por
+    defecto arbitrario que oculte la causa real del error.
     """
     config_file = tmp_path / "config.yaml"
     config_file.write_text(_valid_config_text(mlflow_uri="${MISSING_MLFLOW_VAR}"))
