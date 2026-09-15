@@ -21,6 +21,8 @@ data/
 .env
 *.json
 *.pem
+*.key
+volume/
 
 # Logs
 *.log
