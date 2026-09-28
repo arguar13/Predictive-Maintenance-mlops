@@ -194,12 +194,12 @@ Los puertos del host están corridos (8001, 5001, 4567, 5433 en vez de los defau
 
 ```bash
 make dvc-pull      # trae core_ml/data/ completo
-make train         # prepara features + entrena (25 epochs, patience 5) + quality gate
+make train         # prepara features + entrena (25 epochs, patience 5) + quality gate (~30 min en CPU)
 ```
 
 Por debajo, `make train` encadena las dos etapas del pipeline:
 
-1. **`prepare_training_data.py`** lee los `.txt` crudos de C-MAPSS, muestrea motores completos repartidos por igual entre FD001–FD004 (`--max-engines`, 100 por defecto; `0` = los ~700), los limpia y los transforma en ventanas (`data_processing.py`), y escribe `engine_features.parquet` + `scaler.joblib` en el mismo directorio de datos versionado con DVC.
+1. **`prepare_training_data.py`** lee los `.txt` crudos de C-MAPSS, muestrea motores completos repartidos por igual entre FD001–FD004 (los 709 motores por defecto; `--max-engines N` toma una muestra estratificada más rápida), los limpia y los transforma en ventanas (`data_processing.py`), y escribe `engine_features.parquet` + `scaler.joblib` en el mismo directorio de datos versionado con DVC.
 2. **`train.py`** carga ese parquet, lo valida contra su contrato de datos, entrena el `ConvTransformer` con un split train/val/test agrupado por motor, y registra la corrida en MLflow — modelo, scaler, métricas, y una tupla de trazabilidad con `commit de git + hash de datos de DVC + hiperparámetros + ID de run de MLflow + tag de imagen de contenedor`. Solo registra el modelo y le mueve el alias `champion` si supera el quality gate y no es peor que un champion comparable.
 
 `train.py` es reproducible (`torch.manual_seed(42)`, split train/val/test seedeado y agrupado por motor): dado un run de MLflow, siempre se puede reconstruir con qué commit, qué versión de datos y qué imagen se generó, vía las tags de trazabilidad del run. En GitLab CI, el job `train` es manual (no corre en cada push) porque entrenar contra el dataset completo puede tardar minutos u horas.

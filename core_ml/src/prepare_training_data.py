@@ -29,10 +29,11 @@ from logging_config import configure_logging
 log = configure_logging("prepare-training-data")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-# 100 motores (25 por sub-dataset FD001-FD004) ~ 20k ventanas: cabe holgado
-# en la RAM de un portatil y entrena en CPU en minutos. 0 = todos (~700
-# motores, ~140k ventanas).
-DEFAULT_MAX_ENGINES = 100
+# 0 = todos los motores (709, ~140k ventanas, ~400MB en float32): con el
+# gate evaluado sobre motores de test no vistos, una muestra de 100 motores
+# no alcanzaba el piso de recall de Critical (0.70 < 0.75) y el dataset
+# completo si (0.90). `--max-engines N` sirve para iteraciones rapidas.
+DEFAULT_MAX_ENGINES = 0
 
 
 def _utc_now_naive() -> datetime:

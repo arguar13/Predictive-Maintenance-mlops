@@ -194,12 +194,12 @@ Host ports are shifted (8001, 5001, 4567, 5433 instead of the defaults) so this 
 
 ```bash
 make dvc-pull      # pulls the full core_ml/data/
-make train         # prepares features + trains (25 epochs, patience 5) + quality gate
+make train         # prepares features + trains (25 epochs, patience 5) + quality gate (~30 min on CPU)
 ```
 
 Under the hood, `make train` chains the two stages of the pipeline:
 
-1. **`prepare_training_data.py`** reads the raw C-MAPSS `.txt` files, samples whole engines evenly across FD001–FD004 (`--max-engines`, 100 by default; `0` = all ~700), cleans and windows them (`data_processing.py`), and writes `engine_features.parquet` + `scaler.joblib` into the same DVC-tracked data directory.
+1. **`prepare_training_data.py`** reads the raw C-MAPSS `.txt` files, samples whole engines evenly across FD001–FD004 (all 709 engines by default; `--max-engines N` takes a faster stratified sample), cleans and windows them (`data_processing.py`), and writes `engine_features.parquet` + `scaler.joblib` into the same DVC-tracked data directory.
 2. **`train.py`** loads that parquet, validates it against its data contract, trains the `ConvTransformer` with an engine-grouped train/val/test split, and logs the run to MLflow — model, scaler, metrics, and a lineage tuple of `git commit + DVC data hash + hyperparameters + MLflow run ID + container image tag`. It only registers the model and moves the `champion` alias to it if it clears the quality gate and isn't worse than a comparable champion.
 
 `train.py` is reproducible (`torch.manual_seed(42)`, a seeded train/val/test split grouped by engine): given an MLflow run, you can always reconstruct which commit, which data version, and which image produced it, via the run's lineage tags. In GitLab CI, the `train` job is manual (it doesn't run on every push) because training against the full dataset can take minutes to hours.
