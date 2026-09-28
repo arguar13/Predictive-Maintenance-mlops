@@ -71,7 +71,11 @@ def test_rejected_model_is_logged_but_never_registered(prepared_data_dir, monkey
     run = client.get_run(run_id)
     assert run.data.tags["quality_gate_passed"] == "False"
     assert "training_data_fingerprint" in run.data.tags
-    assert "best_val_f2_weighted" in run.data.metrics
+    # El gate se decide sobre motores de test, distintos de los de val.
+    assert {"best_val_f2_weighted", "test_f2_weighted", "test_critical_recall"} <= set(
+        run.data.metrics
+    )
+    assert int(run.data.params["test_samples"]) > 0
     artifacts = {a.path for a in client.list_artifacts(run_id, "preprocessing")}
     assert "preprocessing/scaler.joblib" in artifacts
     assert client.search_registered_models() == []

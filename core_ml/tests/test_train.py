@@ -1,10 +1,12 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from mlflow.exceptions import MlflowException
 
 from train import (
     _checkpoint_score,
+    _split_train_val_test,
     _evaluate_quality_gate,
     _should_replace_champion,
     _split_by_engine,
@@ -99,12 +101,16 @@ def test_quality_gate_passes_when_both_thresholds_are_met():
 def test_training_data_fingerprint_is_deterministic_and_split_sensitive():
     X, y, groups = _fake_windows({"ENG_A": 4, "ENG_B": 4})
 
-    base = _training_data_fingerprint(X, y, groups, val_split=0.2, seed=42)
+    def fp(X_, val_split=0.2, test_split=0.2, seed=42):
+        return _training_data_fingerprint(X_, y, groups, val_split, test_split, seed)
 
-    assert base == _training_data_fingerprint(X, y, groups, val_split=0.2, seed=42)
-    assert base != _training_data_fingerprint(X, y, groups, val_split=0.3, seed=42)
-    assert base != _training_data_fingerprint(X, y, groups, val_split=0.2, seed=7)
-    assert base != _training_data_fingerprint(X * 2, y, groups, val_split=0.2, seed=42)
+    base = fp(X)
+
+    assert base == fp(X)
+    assert base != fp(X, val_split=0.3)
+    assert base != fp(X, test_split=0.3)
+    assert base != fp(X, seed=7)
+    assert base != fp(X * 2)
 
 
 class _FakeClient:
@@ -121,7 +127,7 @@ class _FakeClient:
         return SimpleNamespace(version="3", run_id="run-champion")
 
     def get_run(self, run_id):
-        metrics = {} if self._f2 is None else {"best_val_f2_weighted": self._f2}
+        metrics = {} if self._f2 is None else {"test_f2_weighted": self._f2}
         return SimpleNamespace(
             data=SimpleNamespace(
                 tags={"training_data_fingerprint": self._fingerprint}, metrics=metrics
@@ -161,3 +167,33 @@ def test_checkpoint_that_passes_the_gate_beats_one_with_higher_f2_that_fails():
 def test_checkpoint_score_falls_back_to_f2_when_nothing_passes_the_gate():
     thresholds = {"f2_threshold": 0.99, "critical_recall_threshold": 0.99}
     assert _checkpoint_score(0.80, 0.5, **thresholds) > _checkpoint_score(0.70, 0.9, **thresholds)
+
+
+def test_three_way_split_keeps_every_engine_in_exactly_one_partition():
+    groups = np.repeat([f"ENG_{i}" for i in range(20)], 10)
+
+    train, val, test = _split_train_val_test(groups, val_split=0.2, test_split=0.2, seed=42)
+
+    train_e, val_e, test_e = (set(groups[idx]) for idx in (train, val, test))
+    assert train_e.isdisjoint(val_e)
+    assert train_e.isdisjoint(test_e)
+    assert val_e.isdisjoint(test_e)
+    assert len(train_e | val_e | test_e) == 20
+    # 20% de motores para test y 20% para val (sobre el total).
+    assert len(test_e) == 4
+    assert len(val_e) == 4
+
+
+def test_three_way_split_falls_back_below_three_engines():
+    groups = np.repeat(["ENG_A", "ENG_B"], 5)
+
+    train, val, test = _split_train_val_test(groups, val_split=0.2, test_split=0.2, seed=42)
+
+    assert len(train) == len(val) == len(test) == len(groups)
+
+
+def test_three_way_split_rejects_fractions_that_leave_no_train():
+    groups = np.repeat([f"ENG_{i}" for i in range(10)], 3)
+
+    with pytest.raises(ValueError, match="sumar menos de 1"):
+        _split_train_val_test(groups, val_split=0.5, test_split=0.5, seed=42)

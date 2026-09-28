@@ -19,6 +19,9 @@ Model Registry, y se le mueve el alias "champion" (el que sirve la API), si:
      asimetrico de confundir un motor "Critical" con "Healthy"/"Alert"; y
   2. no es peor que el champion actual cuando ambos se evaluaron sobre los
      mismos datos y el mismo split (ver `_should_replace_champion`).
+El gate se decide sobre un conjunto de TEST de motores que no participan ni
+en el entrenamiento ni en la eleccion del checkpoint (esa usa VAL), para que
+las metricas que certifican el modelo no esten sesgadas por la seleccion.
 Un modelo rechazado queda solo como run (auditable), sin ensuciar el
 Registry con versiones que nunca deben servirse.
 """
@@ -201,7 +204,12 @@ def _build_lineage_tags(data_dir: str) -> dict[str, str]:
 
 
 def _training_data_fingerprint(
-    X: np.ndarray, y: np.ndarray, groups: np.ndarray, val_split: float, seed: int
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    val_split: float,
+    test_split: float,
+    seed: int,
 ) -> str:
     """Huella del contenido EXACTO con el que se entrena y valida.
 
@@ -215,7 +223,7 @@ def _training_data_fingerprint(
     digest.update(np.ascontiguousarray(X, dtype=np.float32).tobytes())
     digest.update(np.ascontiguousarray(y, dtype=np.int64).tobytes())
     digest.update("|".join(map(str, groups)).encode())
-    digest.update(f"val_split={val_split};seed={seed}".encode())
+    digest.update(f"val_split={val_split};test_split={test_split};seed={seed}".encode())
     return digest.hexdigest()
 
 
@@ -237,6 +245,67 @@ def _load_training_data(data_path: Path) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Pipeline de entrenamiento
 # ---------------------------------------------------------------------------
+
+
+def _group_split_indices(
+    indices: np.ndarray, groups: np.ndarray, test_size: float, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Parte `indices` en dos sin separar nunca las ventanas de un mismo motor."""
+    splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
+    first, second = next(splitter.split(indices, groups=groups[indices]))
+    return indices[first], indices[second]
+
+
+def _split_train_val_test(
+    groups: np.ndarray, val_split: float, test_split: float, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Indices de train / val / test, agrupados por motor (ver _split_by_engine).
+
+    - train: ajusta los pesos.
+    - val: elige el checkpoint y decide el early stopping.
+    - test: SOLO decide el quality gate y la comparacion con el champion.
+
+    Si el gate se evaluara sobre val, las metricas serian optimistas: val ya
+    se uso para elegir el mejor epoch entre muchos, asi que ese epoch esta
+    "ajustado" a val. Con un test de motores que nunca influyen en ninguna
+    decision de entrenamiento, el gate mide generalizacion real.
+    `val_split` y `test_split` son fracciones de MOTORES sobre el total.
+    """
+    if not (0 < val_split < 1 and 0 < test_split < 1 and val_split + test_split < 1):
+        raise ValueError(
+            f"val_split ({val_split}) y test_split ({test_split}) deben estar en (0, 1) "
+            "y sumar menos de 1."
+        )
+    all_indices = np.arange(len(groups))
+    n_engines = len(np.unique(groups))
+    if n_engines < 3:
+        # Mismo criterio que _split_by_engine: solo el smoke test con un
+        # dataset diminuto llega aqui; sin 3 motores no hay tres particiones.
+        log.warning("too_few_engines_for_three_way_split", n_engines=n_engines)
+        return all_indices, all_indices, all_indices
+
+    rest, test = _group_split_indices(all_indices, groups, test_split, seed)
+    # val_split es fraccion del total: se reescala al resto que queda tras test.
+    train, val = _group_split_indices(rest, groups, val_split / (1 - test_split), seed)
+    return train, val, test
+
+
+def _evaluate(model: nn.Module, X: torch.Tensor, y: np.ndarray) -> dict[str, float]:
+    """Accuracy, F2 ponderado y recall de Critical del modelo sobre (X, y)."""
+    model.eval()
+    with torch.no_grad():
+        predictions = torch.argmax(model(X), dim=1).numpy()
+    return {
+        "accuracy": float((predictions == y).mean()),
+        "f2_weighted": float(
+            fbeta_score(y, predictions, beta=2, average="weighted", zero_division=0)
+        ),
+        "critical_recall": float(
+            recall_score(
+                y, predictions, average=None, labels=np.arange(NUM_CLASSES), zero_division=0
+            )[CRITICAL_CLASS_INDEX]
+        ),
+    }
 
 
 def _split_by_engine(
@@ -275,8 +344,7 @@ def _split_by_engine(
         log.warning("too_few_engines_for_group_split", n_engines=n_engines)
         return X, X, y, y
 
-    splitter = GroupShuffleSplit(n_splits=1, test_size=val_split, random_state=seed)
-    train_idx, val_idx = next(splitter.split(X, y, groups=groups))
+    train_idx, val_idx = _group_split_indices(np.arange(len(X)), groups, val_split, seed)
     return X[train_idx], X[val_idx], y[train_idx], y[val_idx]
 
 
@@ -303,7 +371,7 @@ def _should_replace_champion(
         log.info("champion_not_comparable", champion_version=champion.version)
         return True
 
-    champion_f2 = champion_run.data.metrics.get("best_val_f2_weighted")
+    champion_f2 = champion_run.data.metrics.get("test_f2_weighted")
     if champion_f2 is None or challenger_f2 >= champion_f2:
         return True
 
@@ -364,6 +432,7 @@ def train_pipeline(
     learning_rate: float = 0.001,
     batch_size: int = 64,
     val_split: float = 0.2,
+    test_split: float = 0.2,
     enforce_quality_gate: bool = True,
     seed: int = 42,
     patience: int = 5,
@@ -423,14 +492,22 @@ def train_pipeline(
     )
     y = training_data["failure_type"].to_numpy()
     groups = training_data["engine_id"].to_numpy()
-    fingerprint = _training_data_fingerprint(X, y, groups, val_split, seed)
+    fingerprint = _training_data_fingerprint(X, y, groups, val_split, test_split, seed)
 
-    X_train, X_val, y_train, y_val = _split_by_engine(X, y, groups, val_split, seed)
+    train_idx, val_idx, test_idx = _split_train_val_test(groups, val_split, test_split, seed)
+    X_train, y_train = X[train_idx], y[train_idx]
+    y_val, y_test = y[val_idx], y[test_idx]
+    log.info(
+        "engine_split",
+        train_engines=len(np.unique(groups[train_idx])),
+        val_engines=len(np.unique(groups[val_idx])),
+        test_engines=len(np.unique(groups[test_idx])),
+    )
 
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
     y_train_tensor = torch.tensor(y_train, dtype=torch.long)
-    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.long)
+    X_val_tensor = torch.tensor(X[val_idx], dtype=torch.float32)
+    X_test_tensor = torch.tensor(X[test_idx], dtype=torch.float32)
 
     train_loader = DataLoader(
         TensorDataset(X_train_tensor, y_train_tensor), batch_size=batch_size, shuffle=True
@@ -473,9 +550,11 @@ def train_pipeline(
                 "learning_rate": learning_rate,
                 "batch_size": batch_size,
                 "val_split": val_split,
+                "test_split": test_split,
                 "seed": seed,
-                "train_samples": len(X_train),
-                "val_samples": len(X_val),
+                "train_samples": len(train_idx),
+                "val_samples": len(val_idx),
+                "test_samples": len(test_idx),
             }
         )
 
@@ -522,27 +601,10 @@ def train_pipeline(
             avg_loss = total_loss / len(train_loader)
             mlflow.log_metric("train_loss", avg_loss, step=epoch)
 
-            model.eval()
-            with torch.no_grad():
-                val_outputs = model(X_val_tensor)
-                val_predictions = torch.argmax(val_outputs, dim=1).numpy()
-            val_targets = y_val_tensor.numpy()
-
-            epoch_val_accuracy = float((val_predictions == val_targets).mean())
-            epoch_f2_weighted = float(
-                fbeta_score(
-                    val_targets, val_predictions, beta=2, average="weighted", zero_division=0
-                )
-            )
-            epoch_critical_recall = float(
-                recall_score(
-                    val_targets,
-                    val_predictions,
-                    average=None,
-                    labels=np.arange(NUM_CLASSES),
-                    zero_division=0,
-                )[CRITICAL_CLASS_INDEX]
-            )
+            val_metrics = _evaluate(model, X_val_tensor, y_val)
+            epoch_val_accuracy = val_metrics["accuracy"]
+            epoch_f2_weighted = val_metrics["f2_weighted"]
+            epoch_critical_recall = val_metrics["critical_recall"]
             mlflow.log_metric("val_accuracy", epoch_val_accuracy, step=epoch)
             mlflow.log_metric("val_f2_weighted", epoch_f2_weighted, step=epoch)
             mlflow.log_metric("val_critical_recall", epoch_critical_recall, step=epoch)
@@ -591,25 +653,30 @@ def train_pipeline(
                 "epochs debe ser >= 1: no se completo ningún epoch de entrenamiento."
             )
         model.load_state_dict(best_state_dict)
-        model.eval()
-        val_accuracy = best_val_accuracy
-        f2_weighted = best_f2_weighted
-        critical_recall = best_critical_recall
-        # Metricas del checkpoint restaurado (las que decide el gate), como
-        # valores finales del run: las por-epoch no dicen cual se registro.
+        # Metricas finales del checkpoint restaurado. Las de val se reportan
+        # para diagnostico; el gate usa SOLO las de test (motores no vistos).
+        test_metrics = _evaluate(model, X_test_tensor, y_test)
+        test_accuracy = test_metrics["accuracy"]
+        f2_weighted = test_metrics["f2_weighted"]
+        critical_recall = test_metrics["critical_recall"]
         mlflow.log_metrics(
             {
-                "best_val_accuracy": val_accuracy,
-                "best_val_f2_weighted": f2_weighted,
-                "best_val_critical_recall": critical_recall,
+                "best_val_accuracy": best_val_accuracy,
+                "best_val_f2_weighted": best_f2_weighted,
+                "best_val_critical_recall": best_critical_recall,
+                "test_accuracy": test_accuracy,
+                "test_f2_weighted": f2_weighted,
+                "test_critical_recall": critical_recall,
             }
         )
 
         log.info(
-            "validation_completed",
-            val_accuracy=val_accuracy,
-            f2_weighted=f2_weighted,
-            critical_recall=critical_recall,
+            "evaluation_completed",
+            val_f2_weighted=best_f2_weighted,
+            val_critical_recall=best_critical_recall,
+            test_accuracy=test_accuracy,
+            test_f2_weighted=f2_weighted,
+            test_critical_recall=critical_recall,
             f2_threshold=f2_threshold,
             critical_recall_threshold=critical_recall_threshold,
         )
@@ -657,8 +724,8 @@ def train_pipeline(
             mlflow.set_tag("promoted_version", str(registered.version))
             log.info(
                 "quality_gate_passed",
-                val_accuracy=val_accuracy,
-                f2_weighted=f2_weighted,
+                test_accuracy=test_accuracy,
+                test_f2_weighted=f2_weighted,
                 critical_recall=critical_recall,
                 promoted_version=registered.version,
                 alias=CHAMPION_ALIAS,
@@ -668,8 +735,8 @@ def train_pipeline(
         else:
             log.warning(
                 "quality_gate_failed",
-                val_accuracy=val_accuracy,
-                f2_weighted=f2_weighted,
+                test_accuracy=test_accuracy,
+                test_f2_weighted=f2_weighted,
                 critical_recall=critical_recall,
                 f2_threshold=f2_threshold,
                 critical_recall_threshold=critical_recall_threshold,
@@ -677,8 +744,9 @@ def train_pipeline(
 
     if enforce_quality_gate and not quality_gate_passed:
         raise SystemExit(
-            f"Quality gate fallido: f2_weighted={f2_weighted:.4f} (umbral={f2_threshold}), "
-            f"critical_recall={critical_recall:.4f} (umbral={critical_recall_threshold}). "
+            f"Quality gate fallido (test): f2_weighted={f2_weighted:.4f} "
+            f"(umbral={f2_threshold}), critical_recall={critical_recall:.4f} "
+            f"(umbral={critical_recall_threshold}). "
             "No se avanza (revisa datos/hiperparámetros)."
         )
 
@@ -698,7 +766,18 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument(
+        "--val-split",
+        type=float,
+        default=0.2,
+        help="Fraccion de motores para validacion (eleccion de checkpoint).",
+    )
+    parser.add_argument(
+        "--test-split",
+        type=float,
+        default=0.2,
+        help="Fraccion de motores de test: solo deciden el quality gate.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--no-enforce-quality-gate",
@@ -719,6 +798,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         val_split=args.val_split,
+        test_split=args.test_split,
         enforce_quality_gate=args.enforce_quality_gate,
         seed=args.seed,
     )
