@@ -1,0 +1,30 @@
+# Normaliza los finales de línea a LF en el repositorio, independientemente
+# del sistema operativo local (evita diffs ruidosos y falsos positivos de
+# yamllint/pre-commit por CRLF en Windows).
+* text=auto eol=lf
+
+*.py text eol=lf
+*.pyi text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+
+# Binarios: nunca tocar finales de línea ni generar diffs de texto.
+*.parquet binary
+*.joblib binary
+*.pkl binary
+*.pt binary
+*.pth binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.db binary

@@ -7,8 +7,10 @@ env/
 __pycache__/
 *.py[cod]
 
-# Tracking y Modelos Locales
+# Tracking y Modelos Locales (MLflow con SQLite/archivos en local)
 mlruns/
+mlartifacts/
+mlflow.db
 
 # DVC y Datos
 # Ignoramos los datos crudos pero mantenemos los archivos .dvc para el seguimiento
@@ -17,21 +19,50 @@ data/
 !/data/.keep
 .dvc/config.local
 
-# Variables de entorno y credenciales GCP
+# Variables de entorno y credenciales. Antes habia un `*.json` global, que
+# ademas de credenciales ignoraba CUALQUIER json del repo (p.ej.
+# .devcontainer/devcontainer.json, que por eso nunca llego a versionarse).
 .env
-*.json
+.env.*
+*credentials*.json
+*service-account*.json
 *.pem
 *.key
 volume/
 
+# Configuracion local de Claude Code (permisos y preferencias personales)
+.claude/
+
 # Logs
 *.log
 
-# Testing
+# Testing y calidad de codigo
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Entornos de desarrollo
 .vscode/
 .idea/
 .ipynb_checkpoints/
 /data
+
+# Terraform generates providers, modules and local state (incluye
+# terraform/bootstrap/, que se aplica por separado con su propio estado).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+# Los planes guardados (terraform plan -out) son artefactos transitorios:
+# llevan embebida una copia del config y de los valores sensibles resueltos.
+*.tfplan
+
+# gitlab-ci-local (validacion local del pipeline de CI)
+.gitlab-ci-local/
+
+# Documentacion local (no versionar)
+GUIA_EJECUCION_PROYECTO 611.docx
+Guia completa del proyecto 611/

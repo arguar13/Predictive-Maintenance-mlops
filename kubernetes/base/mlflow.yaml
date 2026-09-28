@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlops-env
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      serviceAccountName: mlops-sa
+      # La imagen upstream de MLflow corre como root por defecto. Aqui se
+      # fuerza el mismo UID no privilegiado que el resto del proyecto; el
+      # servidor no necesita escribir en la raiz porque el backend store es
+      # RDS y el artifact root es S3.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # La imagen oficial ghcr.io/mlflow/mlflow no trae driver de Postgres
+      # (psycopg2), y este backend-store-uri es Postgres/RDS -- sin el, el
+      # server crashea al arrancar con ModuleNotFoundError: psycopg2. Antes
+      # este proyecto resolvia esto con una imagen propia (Dockerfile.mlflow,
+      # publicada a un ECR dedicado); ahora, para usar la imagen oficial tal
+      # cual (sin build+push propio que mantener), un initContainer instala
+      # psycopg2-binary en un volumen compartido ANTES de que arranque el
+      # contenedor principal, y PYTHONPATH lo apunta ahi. Con
+      # readOnlyRootFilesystem=true en el contenedor principal, este volumen
+      # (emptyDir) es el unico lugar donde algo puede quedar instalado.
+      initContainers:
+        - name: install-psycopg2
+          image: ghcr.io/mlflow/mlflow:v3.15.1
+          command:
+            - "pip"
+            - "install"
+            - "--no-cache-dir"
+            - "--target=/opt/pip-packages"
+            - "psycopg2-binary==2.9.9"
+          volumeMounts:
+            - name: pip-packages
+              mountPath: /opt/pip-packages
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v3.15.1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          command: ["mlflow", "server"]
+          args:
+            - "--host=0.0.0.0"
+            - "--port=5000"
+            - "--backend-store-uri=postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(DB_HOST):5432/$(POSTGRES_DB)"
+            # Debe coincidir con `terraform output s3_bucket_name` (terraform/s3.tf).
+            - "--default-artifact-root=s3://predictive-maintenance-mlops-artifacts-040175285118"
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: mlops-config
+            - secretRef:
+                name: mlops-secrets
+          env:
+            - name: HOME
+              value: /tmp
+            - name: PYTHONPATH
+              value: /opt/pip-packages
+            # MLflow >=3 rechaza por defecto cualquier Host header que no sea
+            # localhost/127.0.0.1/una IP privada literal (proteccion anti DNS
+            # rebinding). api llama a este servidor como "http://mlflow:5000"
+            # (DNS del Service de Kubernetes), que no matchea esos patrones
+            # por defecto -> 403 "Invalid Host header". Se declara
+            # explicitamente el nombre corto y el FQDN del Service como
+            # permitidos (mismo problema que en docker-compose.yml, ver su
+            # comentario).
+            - name: MLFLOW_SERVER_ALLOWED_HOSTS
+              value: "mlflow,mlflow:*,mlflow.mlops-env,mlflow.mlops-env:*,mlflow.mlops-env.svc.cluster.local,mlflow.mlops-env.svc.cluster.local:*"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: pip-packages
+              mountPath: /opt/pip-packages
+          # Sin requests/limits el pod es BestEffort: es el primero que el
+          # kubelet desaloja bajo presion de memoria, justo cuando mas falta
+          # hace el tracking server (KSV-0011/0015/0016/0018).
+          # 1Gi de limite producia OOMKilled en el arranque real contra
+          # Postgres/RDS (los nodos EKS son t3.large, 8GiB, hay margen de sobra).
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: pip-packages
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: mlops-env
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - port: 5000
+      targetPort: 5000
+  type: ClusterIP
+---
+# mlflow server es stateless (el estado vive en RDS/S3), asi que la segunda
+# replica de arriba no necesita ninguna historia de leader-election. Sin
+# este PDB, una unica disrupcion voluntaria (drenar un nodo durante un
+# upgrade de EKS) podia tumbar las dos replicas en la misma ventana y
+# dejar sin tracking server a la vez a api (que carga el modelo desde aca
+# al arrancar) y al pipeline de entrenamiento.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mlflow-pdb
+  namespace: mlops-env
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mlflow

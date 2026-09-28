@@ -1,0 +1,124 @@
+[tool.poetry]
+name = "predictive-maintenance-api"
+version = "2.0.0"
+description = "Microservicio de Serving e Inferencia MLOps"
+authors = ["Armando Guarnera"]
+# La API es una APLICACION (se sirve con uvicorn), no una libreria: no tiene
+# un paquete importable llamado "predictive_maintenance_api" ni se publica
+# como wheel. Sin esto, `poetry install` intenta instalar el proyecto raiz y
+# falla con "No file/folder found for package predictive-maintenance-api"
+# -- tanto en `make install` como en el `poetry install` del Dockerfile.
+# Poetry se usa aqui SOLO como gestor de dependencias deterministas.
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+# fastapi/uvicorn: se sube del pin exacto 0.103.2 / 0.23.2. Ese fastapi
+# arrastraba starlette 0.27.0, con 4 CVEs HIGH sin parchear
+# (CVE-2024-47874 DoS por multipart). Luego, el ^0.121.0 que reemplazo a ese
+# pin tope starlette en <0.51.0 (caret de Poetry), version que a su vez
+# quedo con 2 CVEs HIGH nuevos (CVE-2026-48818 SSRF/NTLM via UNC paths en
+# StaticFiles, CVE-2026-54283 DoS por limites de request.form() ignorados).
+# Se sube a ^0.135.0 para arrastrar starlette >=1.3.1 (ambos corregidos).
+fastapi = "^0.135.0"
+uvicorn = "^0.41.0"
+mlflow = "^3.15.1"
+# torch: DEBE ir alineado con core_ml/pyproject.toml. El modelo se registra
+# en MLflow con serialization_format="pickle" (ver core_ml/src/train.py), y
+# un pickle de un nn.Module producido por torch 2.13 no tiene garantia de
+# cargar en el 2.2.0 que habia pineado aqui. Ademas 2.2.0 arrastra
+# CVE-2025-32434 (CRITICAL: RCE en torch.load), corregida en 2.6.0.
+# Rueda CPU-only (ver [[tool.poetry.source]] "pytorch-cpu" mas abajo): la API
+# solo hace inferencia (nunca entrena), sin llamadas a CUDA. La rueda de PyPI
+# arrastraba ~2GB de paquetes nvidia-* nunca usados -- ese peso fue la causa
+# real de que el job build_image de .gitlab-ci.yml se quedara sin ancho de
+# banda de subida y excediera el timeout de 1h del job.
+torch = { version = "^2.13.0", source = "pytorch-cpu" }
+# numpy: antes "<2.0.0", incompatible con el ">=2.0.0" de core_ml. Dos
+# proyectos que intercambian arrays y un scaler de scikit-learn por pickle
+# no pueden estar en majors distintos de numpy.
+numpy = ">=2.0.0"
+# api/main.py construye un DataFrame con los nombres de columna del scaler
+# (feature_names_in_) antes de scaler.transform(). Antes llegaba solo como
+# transitiva de mlflow: una dependencia importada directamente se declara.
+pandas = ">=2.2.2"
+pydantic = "^2.9.0"
+joblib = "^1.4.2"
+pyyaml = "^6.0.1"
+# El scaler registrado por core_ml/src/train.py es un sklearn StandardScaler
+# deserializado aquí vía joblib.load: sin esta dependencia, _load_champion_model_and_scaler
+# falla con ModuleNotFoundError en cuanto se descarga un scaler real desde MLflow.
+scikit-learn = ">=1.4.0"
+structlog = "^26.1.0" # logging JSON estructurado (CloudWatch/Elasticsearch)
+# mlflow.pytorch.load_model contra un artifact-root real (s3://..., ver
+# terraform/s3.tf + kubernetes/base/mlflow.yaml) usa boto3/botocore por
+# debajo (mlflow.store.artifact.s3_artifact_repo) para listar/descargar los
+# artefactos del modelo. Sin esto, nunca fallaba en local (el MLflow de
+# docker-compose usa un artifact-root en disco), pero contra el MLflow real
+# de EKS la API jamas pudo cargar el modelo: ModuleNotFoundError: 'botocore'
+# en el primer /health, service permanentemente 503.
+boto3 = ">=1.38.27"
+
+# ---------------------------------------------------------------------------
+# Elevaciones de dependencias TRANSITIVAS por CVE conocido
+#
+# Ninguna de estas se importa directamente: llegan a traves de mlflow. Se
+# declaran aqui como dependencias directas porque es la unica forma en Poetry
+# de imponer un suelo de version a una transitiva. Sin ellas, el resolutor
+# elige la version mas baja que satisface a mlflow, que resulta ser una con
+# CVEs conocidos sin parchear. Un entorno productivo real agregaria ademas
+# un scanner de dependencias (p.ej. Trivy) que rompa la build automaticamente
+# ante casos como este.
+# ---------------------------------------------------------------------------
+gunicorn = ">=22.0.0"       # CVE-2024-1135, CVE-2024-6827 (HTTP request smuggling)
+protobuf = ">=5.29.6"        # CVE-2026-0994
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.16.4"
+mypy = "^1.13.0"
+types-pyyaml = "^6.0.12"
+pytest = "^8.3.3"
+pytest-cov = "^5.0.0"
+httpx = "^0.27.2"
+
+[[tool.poetry.source]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+# ---------------------------------------------------------------------------
+# Shift-left tooling configuration (calidad local)
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "C4", "SIM"]
+ignore = []
+
+[tool.ruff.format]
+# ruff format reemplaza a black+isort (mismo estilo, una sola herramienta).
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "."
+explicit_package_bases = true
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+exclude = ["tests/"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"

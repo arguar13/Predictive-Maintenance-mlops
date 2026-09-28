@@ -1,0 +1,56 @@
+# CI de GitHub: solo calidad (formato + lint + tests) y un build de la imagen
+# SIN push. No usa secretos ni toca AWS: el despliegue vive en .gitlab-ci.yml
+# (build_push/deploy, restringidos a la rama por defecto de GitLab).
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Debe coincidir con la version que genero api/poetry.lock y core_ml/poetry.lock.
+  POETRY_VERSION: "2.4.1"
+
+jobs:
+  lint_test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar Poetry
+        run: pip install "poetry==${POETRY_VERSION}"
+
+      - name: Cache de Poetry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ runner.os }}-${{ hashFiles('api/poetry.lock', 'core_ml/poetry.lock') }}
+
+      - name: Instalar dependencias (api/ y core_ml/)
+        run: make install
+
+      # format-check + lint + test: exactamente lo mismo que `make ci` en local.
+      - name: make ci
+        run: make ci
+
+  docker_build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: lint_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build de la imagen de la API (sin push)
+        run: docker build -t predictive-maintenance-api:ci .

@@ -1,0 +1,12 @@
+# Valores no sensibles. Los que dependen de recursos AWS provisionados por
+# Terraform (DB_HOST) se completan con `terraform output` tras el apply --
+# ver kubernetes/overlays/production para el patch que los sobreescribe por
+# entorno (nunca con sed).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlops-config
+  namespace: mlops-env
+data:
+  MLFLOW_TRACKING_URI: "http://mlflow:5000"
+  DB_HOST: "predictive-maintenance-mlops-backend-db.cctqc6mqgk83.us-east-1.rds.amazonaws.com"

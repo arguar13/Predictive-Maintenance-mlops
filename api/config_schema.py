@@ -1,0 +1,44 @@
+"""Contrato de datos (Pydantic) para config.yaml.
+
+FAIL FAST: si el YAML de configuración falta una clave, tiene un tipo
+incorrecto o un valor fuera de rango, la aplicación debe fallar al arrancar
+con un error claro, no minutos/horas después con un KeyError críptico en
+medio de un batch de entrenamiento o de una petición de inferencia.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class _StrictModel(BaseModel):
+    # extra="forbid": una clave desconocida (typo, o un campo obsoleto como el
+    # antiguo model.num_features) falla al arrancar en vez de ignorarse en
+    # silencio.
+    model_config = ConfigDict(extra="forbid")
+
+
+class ProjectConfig(_StrictModel):
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+
+
+class ModelConfig(_StrictModel):
+    window_size: int = Field(gt=0)
+    mlflow_tracking_uri: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+
+
+class MonitoringConfig(_StrictModel):
+    # Quality Gate: un modelo recién entrenado solo se promueve en el Model
+    # Registry de MLflow (alias "champion") si supera AMBOS umbrales - ver
+    # core_ml/src/train.py::_evaluate_quality_gate (accuracy plano es ciego
+    # al costo asimétrico de un falso negativo en "Critical").
+    f2_weighted_threshold: float = Field(ge=0, le=1)
+    critical_recall_threshold: float = Field(ge=0, le=1)
+
+
+class AppConfig(_StrictModel):
+    project: ProjectConfig
+    model: ModelConfig
+    monitoring: MonitoringConfig

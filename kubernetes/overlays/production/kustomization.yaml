@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+# El pipeline de CI (.gitlab-ci.yml, stage "deploy") actualiza SOLO este
+# bloque de forma declarativa con:
+#   kustomize edit set image <repo>/predictive-maintenance-mlops-api=<repo>/predictive-maintenance-mlops-api:$CI_COMMIT_SHA
+# (ver Makefile, target `deploy`) y aplica directo contra el cluster con
+# `kubectl apply -k` -- nunca un `sed -i` sobre el YAML. No hay imagen de
+# mlflow que fijar aqui: corre desde la imagen publica ghcr.io/mlflow/mlflow
+# (ver kubernetes/base/mlflow.yaml), no una imagen propia versionada por CI.
+images:
+- name: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-api
+  newName: 040175285118.dkr.ecr.us-east-1.amazonaws.com/predictive-maintenance-mlops-api
+  newTag: a7665252f1218574a10b9dae271126b0d701b3b4
