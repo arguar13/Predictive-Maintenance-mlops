@@ -11,6 +11,7 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-Kustomize-326CE5?logo=kubernetes&logoColor=white)](kubernetes/base)
 [![Terraform](https://img.shields.io/badge/IaC-Terraform-7B42BC?logo=terraform&logoColor=white)](terraform)
 [![CI/CD](https://img.shields.io/badge/CI%2FCD-GitLab%20CI-FC6D26?logo=gitlab&logoColor=white)](.gitlab-ci.yml)
+[![CI](https://github.com/arguar13/Predictive-Maintenance-mlops/actions/workflows/ci.yml/badge.svg?branch=dev)](.github/workflows/ci.yml)
 
 ## What this project does
 
@@ -52,10 +53,10 @@ graph TD
 
 **Flow, in words:**
 
-1. Raw C-MAPSS data (versioned with DVC) is turned by `prepare_training_data.py` into 30-timestep sliding windows (`engine_features.parquet` + `scaler.joblib`).
-2. `train.py` trains the ConvTransformer and logs the run to MLflow (model + scaler + metrics + lineage tags). It only moves to the `champion` alias if it beats the quality gate.
-3. The FastAPI service loads the `champion` model and its scaler from MLflow on startup, and serves `/predict`.
-4. GitLab CI: `lint_test` (ruff + pytest) → `build_push` (build + push to ECR) → `deploy` (`kubectl apply -k` straight against the cluster). `train` is a separate manual job, since a full training run can take from minutes to hours and shouldn't block every push.
+1. Raw C-MAPSS data (versioned with DVC) is turned by `prepare_training_data.py` into 30-timestep sliding windows (`engine_features.parquet` + `scaler.joblib`), from a sample of whole engines spread evenly across FD001–FD004.
+2. `train.py` trains the ConvTransformer and logs the run to MLflow (model + scaler + metrics + lineage tags). It is only registered and moved to the `champion` alias if it beats the quality gate and isn't worse than the current champion.
+3. The FastAPI service loads the `champion` model and its scaler from MLflow (retrying until one exists), and serves `/predict`.
+4. GitLab CI: `lint_test` (format + ruff + pytest) on every push; `build_push` (build + push to ECR) and a manual `deploy` (`kubectl apply -k`) only on the default branch. `train` is a separate manual job, since a full training run can take from minutes to hours and shouldn't block every push. GitHub Actions runs the same quality checks plus a Docker build, with no AWS access.
 
 **A few design choices worth calling out:**
 
@@ -75,7 +76,7 @@ graph TD
 | Serving API | FastAPI, Uvicorn |
 | Containers / Orchestration | Docker, Docker Compose, Kubernetes (EKS), Kustomize |
 | Infrastructure as Code | Terraform (VPC, EKS, RDS, S3, ECR, IAM/OIDC) |
-| CI/CD | GitLab CI, AWS auth via OIDC |
+| CI/CD | GitLab CI (AWS auth via OIDC), GitHub Actions (quality only) |
 | Code quality / observability | Ruff, mypy (optional), pytest, pre-commit, structlog |
 
 ## The MLOps pipeline
@@ -84,18 +85,18 @@ graph TD
 
 **The model.** `ConvTransformer` (`core_ml/src/train.py`) runs a `Conv1d` layer over the 30-timestep window to extract local sensor patterns, adds sinusoidal positional encoding, and feeds a 2-layer `TransformerEncoder` that models long-range dependencies. It was selected after benchmarking 5 architectures on this same C-MAPSS task.
 
-**Quality gate.** A model is evaluated on a validation split grouped *by engine* (never row by row: sliding windows overlap heavily, and an IID split would leak near-duplicates between train and val). Promotion to the `champion` alias requires beating **two** thresholds in `config/config.yaml`: `f2_weighted_threshold` **and** `critical_recall_threshold` (a hard floor on the Critical class recall specifically, so a model can't compensate for failing on the class that matters most with good performance on the other two). It's a direct metric comparison against the current champion.
+**Quality gate.** A model is evaluated on a validation split grouped *by engine* (never row by row: sliding windows overlap heavily, and an IID split would leak near-duplicates between train and val). Promotion to the `champion` alias requires beating **two** thresholds in `config/config.yaml`: `f2_weighted_threshold` **and** `critical_recall_threshold` (a hard floor on the Critical class recall specifically, so a model can't compensate for failing on the class that matters most with good performance on the other two). Passing the gate isn't enough to replace a champion: if the current champion was evaluated on the exact same data and split (same `training_data_fingerprint` tag), the challenger also has to match or beat its F2. Only runs that are promoted get a version in the Model Registry; rejected runs stay as plain MLflow runs, auditable but never servable.
 
-**Toy dataset.** `core_ml/data_toy/` (~1000 rows, versioned with DVC) lets the whole pipeline run in seconds, without a GPU — this is what `make smoke-test` and the CI `lint_test` job run before touching the full dataset.
+**Toy dataset.** `core_ml/data_toy/` (~1000 rows, versioned with DVC, or rebuilt locally with `make build-toy-dataset`) lets the whole pipeline run in seconds, without a GPU — this is what `make smoke-test` runs. CI doesn't need DVC at all: `core_ml/tests/test_pipeline_e2e.py` runs prepare → train → MLflow → Registry end to end on a synthetic dataset with the exact C-MAPSS format.
 
-**Serving.** `api/main.py` loads the `champion` model and its `StandardScaler` from MLflow on startup. The input shape is inferred from the served model's signature, not from a hardcoded constant, so the API contract automatically follows whatever model gets promoted.
+**Serving.** `api/main.py` loads the `champion` model and its `StandardScaler` from the same MLflow model version. If MLflow isn't reachable yet or there's no champion, it keeps retrying (every 30 s) instead of staying in `503` until a restart. The expected shape and column order come from the served artifacts (scaler + model signature), never from a constant in `config.yaml`, so the API contract automatically follows whatever model gets promoted.
 
 ## API reference
 
 | Endpoint | Method | Description |
 | --- | --- | --- |
-| `/health` | `GET` | `200` with `{"status": "ok", "model_version": "<n>", "window_size": <n>, "num_features": <n>}` if a `champion` model is loaded; `503` otherwise |
-| `/predict` | `POST` | Requires an `X-API-Key` header. Body: `{"engine_id": "...", "readings": [[...], ...]}` (one row per timestep). Returns `{"engine_id": "...", "prediction": "Healthy"\|"Alert"\|"Critical", "model_version": "<n>"}` |
+| `/health` | `GET` | `200` with `{"status": "ok", "model_version": "<n>", "window_size": <n>, "num_features": <n>, "feature_names": [...]}` if a `champion` model is loaded; `503` otherwise |
+| `/predict` | `POST` | Requires an `X-API-Key` header. Body: `{"engine_id": "...", "readings": [[...], ...]}` (one row per timestep, columns in `feature_names` order, raw unscaled values). Returns `{"engine_id": "...", "prediction": "Healthy"\|"Alert"\|"Critical", "probabilities": {...}, "model_version": "<n>"}` |
 
 `/health` is used as the readiness probe. The liveness probe uses a plain TCP check (not `/health`): a healthy pod that doesn't have a `champion` model yet is a business state, not a dead process, and shouldn't be restarted in a loop over it.
 
@@ -123,6 +124,7 @@ graph TD
 │   └── bootstrap/              # One-time: S3+DynamoDB state backend
 ├── localstack/init-aws.sh   # LocalStack bootstrap (simulated S3 locally)
 ├── .gitlab-ci.yml           # lint_test → build_push → deploy → train (manual)
+├── .github/workflows/ci.yml # GitHub: format + lint + tests + docker build (no AWS)
 ├── Makefile                 # Single command interface (local + CI)
 ├── docker-compose.yml       # Local stack: Postgres, MLflow, API, LocalStack
 └── Dockerfile                # API image
@@ -155,8 +157,9 @@ make ci         # same as the lint_test job in GitLab CI
 ### 4. Validate the pipeline with the toy dataset (seconds, no GPU)
 
 ```bash
-make dvc-pull    # downloads data/ and data_toy/ from the DVC S3 remote
-make smoke-test  # contracts + training + MLflow + quality gate
+make dvc-pull            # downloads data/ and data_toy/ from the DVC S3 remote (real AWS)
+make build-toy-dataset   # ...or rebuild data_toy/ locally from core_ml/data/
+make smoke-test          # contracts + training + MLflow + quality gate
 ```
 
 `make smoke-test` is self-contained: without `MLFLOW_TRACKING_URI` exported, it falls back to an ephemeral SQLite tracking store.
@@ -175,13 +178,15 @@ make compose-ps   # healthcheck of every service
 | LocalStack | `http://localhost:4567` |
 | Postgres | `localhost:5433` |
 
-`/health` returns `503` until a model has the `champion` alias in this local MLflow — that's the expected starting state:
+`/health` returns `503` until a model has the `champion` alias in this local MLflow — that's the expected starting state. Train against it and the API picks the champion up on its own within ~30 s:
 
 ```bash
 export MLFLOW_TRACKING_URI=http://localhost:5001
-make train-toy
-docker compose restart api
+make train-toy              # seconds: proves the plumbing (or `make train` for a real model)
+docker compose restart api  # only needed to serve a NEW champion later
 ```
+
+A champion trained on the toy dataset (5 engines, 1 of them in validation) only proves the plumbing works; its metrics aren't representative.
 
 Host ports are shifted (8001, 5001, 4567, 5433 instead of the defaults) so this stack can run alongside other projects on the same machine without port conflicts; the containers' internal ports don't change.
 
@@ -194,14 +199,14 @@ make train         # prepares features + trains (25 epochs, patience 5) + qualit
 
 Under the hood, `make train` chains the two stages of the pipeline:
 
-1. **`prepare_training_data.py`** reads the raw C-MAPSS `.txt` files, cleans and windows them (`data_processing.py`), and writes `engine_features.parquet` + `scaler.joblib` into the same DVC-tracked data directory.
-2. **`train.py`** loads that parquet, validates it against its data contract, trains the `ConvTransformer` with an engine-grouped train/val split, and logs the run to MLflow — model, scaler, metrics, and a lineage tuple of `git commit + DVC data hash + hyperparameters + MLflow run ID + container image tag`. It only promotes the run to the `champion` alias if it clears the quality gate.
+1. **`prepare_training_data.py`** reads the raw C-MAPSS `.txt` files, samples whole engines evenly across FD001–FD004 (`--max-engines`, 100 by default; `0` = all ~700), cleans and windows them (`data_processing.py`), and writes `engine_features.parquet` + `scaler.joblib` into the same DVC-tracked data directory.
+2. **`train.py`** loads that parquet, validates it against its data contract, trains the `ConvTransformer` with an engine-grouped train/val split, and logs the run to MLflow — model, scaler, metrics, and a lineage tuple of `git commit + DVC data hash + hyperparameters + MLflow run ID + container image tag`. It only registers the model and moves the `champion` alias to it if it clears the quality gate and isn't worse than a comparable champion.
 
 `train.py` is reproducible (`torch.manual_seed(42)`, a seeded train/val split grouped by engine): given an MLflow run, you can always reconstruct which commit, which data version, and which image produced it, via the run's lineage tags. In GitLab CI, the `train` job is manual (it doesn't run on every push) because training against the full dataset can take minutes to hours.
 
 ## Serving predictions
 
-Once a model has been promoted to `champion`, `api/main.py` loads it and its scaler from the MLflow Model Registry on startup and exposes `/predict`. A request looks like:
+Once a model has been promoted to `champion`, `api/main.py` loads it and its scaler from the MLflow Model Registry and exposes `/predict`. `GET /health` returns the expected `window_size` and the `feature_names` order for each row. A request looks like:
 
 ```bash
 curl -X POST http://localhost:8001/predict \
@@ -210,7 +215,7 @@ curl -X POST http://localhost:8001/predict \
   -d '{"engine_id": "FD001_23", "readings": [[...30 rows of sensor values...]]}'
 ```
 
-The response carries the predicted class (`Healthy` | `Alert` | `Critical`) and the model version that produced it, so callers can always tell which registered model answered a given request. Requests with the wrong window shape, non-finite sensor values, or a missing/blank `engine_id` are rejected with a `422` before they reach the model (`api/schemas.py`); requests without a valid `X-API-Key` are rejected with `401`.
+The response carries the predicted class (`Healthy` | `Alert` | `Critical`), the probability of each class, and the model version that produced it, so callers can always tell which registered model answered a given request. Requests with the wrong window shape, non-finite sensor values, or a missing/blank `engine_id` are rejected with a `422` before they reach the model (`api/schemas.py` and the shape check in `api/main.py`); requests without a valid `X-API-Key` are rejected with `401`.
 
 ## Deploying to AWS
 
@@ -236,7 +241,7 @@ kubectl create secret generic mlops-secrets -n mlops-env \
 make docker-build docker-push deploy IMAGE_TAG=$(git rev-parse --short HEAD)
 ```
 
-In GitLab CI, the `build_push` and `deploy` stages do this automatically on every push (authenticating against AWS via OIDC, no static credentials — see `terraform/iam.tf`). `make k8s-build` renders the overlay for inspection before applying; `make k8s-diff` shows the diff against the live cluster.
+In GitLab CI, `build_push` does this automatically on pushes to the default branch, and `deploy` is a manual button on that pipeline (both authenticate against AWS via OIDC, no static credentials — see `terraform/iam.tf`). Feature branches only run `lint_test`. `make k8s-build` renders the overlay for inspection before applying; `make k8s-diff` shows the diff against the live cluster.
 
 Terraform provisions a VPC across 2 availability zones, a single-node-group EKS cluster, an RDS PostgreSQL instance (MLflow's backend store), an S3 bucket (DVC data + MLflow artifacts), an ECR repository for the API image, and the IAM roles/OIDC providers CI needs to authenticate without long-lived credentials.
 
@@ -250,7 +255,7 @@ Terraform provisions a VPC across 2 availability zones, a single-node-group EKS 
 | Unit tests | [pytest](https://docs.pytest.org/) | `make test` |
 | File/YAML hygiene | pre-commit hooks | `make precommit-run` |
 
-`make ci` runs the same thing as the `lint_test` job in `.gitlab-ci.yml`: if it's green locally, the CI pipeline should be green too. Both `api/` and `core_ml/` are independent Poetry projects with their own `pyproject.toml`, lockfile, and test suite, and pre-commit runs the same ruff/mypy/pytest commands against whichever project's files changed in a commit.
+`make ci` runs the same thing as the `lint_test` job in `.gitlab-ci.yml` and the `lint_test` job in `.github/workflows/ci.yml`: if it's green locally, the CI pipeline should be green too. Both `api/` and `core_ml/` are independent Poetry projects with their own `pyproject.toml`, lockfile, and test suite, and pre-commit runs the same ruff/mypy/pytest commands against whichever project's files changed in a commit.
 
 ## License
 

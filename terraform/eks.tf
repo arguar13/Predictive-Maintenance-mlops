@@ -19,7 +19,6 @@ module "eks" {
   # El endpoint sigue siendo publico (AWS-0040) de forma deliberada: hacerlo
   # privado obligaria a un bastion o VPN para cualquier `kubectl`, incluido
   # el pipeline de CI que despliega (ver .gitlab-ci.yml, stage "deploy").
-  # Ver .trivyignore para la aceptacion documentada.
   cluster_endpoint_public_access       = true
   cluster_endpoint_public_access_cidrs = var.cluster_public_access_cidrs
 

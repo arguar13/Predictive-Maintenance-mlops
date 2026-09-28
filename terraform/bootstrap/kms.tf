@@ -8,8 +8,9 @@
 # AWS-0132 (HIGH) de trivy y, mas importante, sin control sobre quien puede
 # descifrarlo ni rotacion propia.
 #
-# Esta clave es independiente de la CMK del stack principal (terraform/kms.tf)
-# a proposito: el bootstrap tiene que poder aplicarse en una cuenta vacia,
+# El stack principal (terraform/) no usa CMKs propias (SSE-S3 / claves
+# gestionadas por AWS): esta clave es exclusiva del backend de estado, y vive
+# aqui porque el bootstrap tiene que poder aplicarse en una cuenta vacia,
 # antes de que exista ningun otro recurso.
 # ============================================================
 
