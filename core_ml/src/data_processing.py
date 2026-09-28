@@ -6,6 +6,9 @@ from sklearn.preprocessing import StandardScaler
 
 from data_contracts import validate_labeled_telemetry, validate_raw_telemetry
 
+# Columnas que identifican/etiquetan una fila pero no son features del modelo.
+NON_FEATURE_COLUMNS = ("unit_number", "time_in_cycles", "global_unit", "failure_type")
+
 
 def load_and_combine_data(data_dir: str) -> pd.DataFrame:
     """Carga y une los datasets FD001 a FD004 de C-MAPSS garantizando identificadores únicos.
@@ -30,8 +33,46 @@ def load_and_combine_data(data_dir: str) -> pd.DataFrame:
             df["global_unit"] = df["dataset_id"] + "_" + df["unit_number"].astype(str)
             train_list.append(df)
 
+    if not train_list:
+        # Sin esto, pd.concat([]) falla con un "No objects to concatenate"
+        # que no dice que archivo faltaba ni donde se busco.
+        raise FileNotFoundError(
+            f"No se encontro ningun train_FD00X.txt en {data_dir}. "
+            "Descarga los datos con `make dvc-pull` (o copialos a mano)."
+        )
+
     combined = pd.concat(train_list, ignore_index=True)
     return validate_raw_telemetry(combined)
+
+
+def select_engines(df: pd.DataFrame, max_engines: int | None, seed: int = 42) -> pd.DataFrame:
+    """Submuestrea MOTORES completos (nunca filas sueltas), estratificado por sub-dataset.
+
+    Limitar el volumen cortando "las primeras N ventanas" sesga el
+    entrenamiento: los .txt estan ordenados por sub-dataset y motor, asi que
+    las primeras ventanas son todas de los primeros motores de FD001 (una sola
+    condicion operativa, un solo modo de fallo), mientras el scaler y el
+    numero de features salen del dataset combinado. Aqui cada sub-dataset
+    aporta el mismo cupo de motores elegidos al azar (con semilla fija), y
+    cada motor se conserva entero para no romper su serie temporal.
+    `max_engines=None` (o <= 0) conserva todos los motores.
+    """
+    if not max_engines or max_engines <= 0:
+        return df
+
+    engines = df[["dataset_id", "global_unit"]].drop_duplicates()
+    if len(engines) <= max_engines:
+        return df
+
+    rng = np.random.default_rng(seed)
+    per_dataset = max(1, max_engines // engines["dataset_id"].nunique())
+    selected: list[str] = []
+    for _, group in engines.groupby("dataset_id", sort=True):
+        units = group["global_unit"].to_numpy()
+        take = min(per_dataset, len(units))
+        selected.extend(rng.choice(units, size=take, replace=False).tolist())
+
+    return df[df["global_unit"].isin(selected)].reset_index(drop=True)
 
 
 def build_multiclass_target(df: pd.DataFrame) -> pd.DataFrame:
@@ -61,7 +102,14 @@ def clean_and_prepare(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def create_sliding_windows(df: pd.DataFrame, window_size: int = 30):
+def feature_columns(df: pd.DataFrame) -> list[str]:
+    """Columnas que entran al modelo, en el orden en que las espera el scaler."""
+    return [c for c in df.columns if c not in NON_FEATURE_COLUMNS]
+
+
+def create_sliding_windows(
+    df: pd.DataFrame, window_size: int = 30
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, StandardScaler]:
     """Genera ventanas tridimensionales (Muestras, Ventana Temporal,
     Características) para PyTorch.
 
@@ -73,6 +121,10 @@ def create_sliding_windows(df: pd.DataFrame, window_size: int = 30):
     debe usar `groups` con GroupShuffleSplit, nunca un split IID sobre las
     filas de X/y directamente.
 
+    El scaler se ajusta sobre un DataFrame (no un ndarray) para que guarde
+    `feature_names_in_`: la API lo usa para publicar el orden exacto de
+    columnas que espera cada fila de /predict.
+
     Nota: el StandardScaler se ajusta sobre TODAS las filas de `df`, no solo
     sobre un futuro subconjunto de entrenamiento. Es una fuga de información
     más leve que la del split (estadísticas globales de escalado, no
@@ -83,24 +135,43 @@ def create_sliding_windows(df: pd.DataFrame, window_size: int = 30):
     desproporcionado para el tamaño del riesgo. Aceptado conscientemente,
     no pasado por alto.
     """
-    features = [
-        c
-        for c in df.columns
-        if c not in ["unit_number", "time_in_cycles", "global_unit", "failure_type"]
-    ]
+    features = feature_columns(df)
+
+    # Orden temporal garantizado dentro de cada motor: las ventanas asumen
+    # ciclos consecutivos, y no se modifica el DataFrame del llamador.
+    ordered = df.sort_values(["global_unit", "time_in_cycles"], kind="stable")
 
     scaler = StandardScaler()
-    df[features] = scaler.fit_transform(df[features])
+    scaled = scaler.fit_transform(ordered[features]).astype(np.float32)
 
-    X, y, groups = [], [], []
-    for unit in df["global_unit"].unique():
-        unit_data = df[df["global_unit"] == unit].copy()
-        unit_data.reset_index(drop=True, inplace=True)
+    units = ordered["global_unit"].to_numpy()
+    labels = ordered["failure_type"].to_numpy()
 
-        for i in range(len(unit_data) - window_size + 1):
-            X.append(unit_data[features].iloc[i : i + window_size].values)
-            # Etiqueta del último ciclo de la ventana
-            y.append(unit_data["failure_type"].iloc[i + window_size - 1])
-            groups.append(unit)
+    # Tras ordenar, las filas de cada motor son contiguas: basta con los
+    # indices donde cambia global_unit para delimitar cada serie.
+    boundaries = np.flatnonzero(units[1:] != units[:-1]) + 1
+    starts = np.concatenate(([0], boundaries))
+    ends = np.concatenate((boundaries, [len(units)]))
 
-    return np.array(X), np.array(y), np.array(groups), scaler
+    X_parts, y_parts, group_parts = [], [], []
+    for start, end in zip(starts, ends, strict=True):
+        n_windows = (end - start) - window_size + 1
+        if n_windows <= 0:
+            continue
+        # sliding_window_view devuelve (n_windows, n_features, window_size):
+        # vistas sin copia, en vez de un bucle Python con .iloc por ventana.
+        windows = np.lib.stride_tricks.sliding_window_view(scaled[start:end], window_size, axis=0)
+        X_parts.append(windows.transpose(0, 2, 1))
+        # Etiqueta del último ciclo de la ventana
+        y_parts.append(labels[start + window_size - 1 : end])
+        group_parts.append(np.full(n_windows, units[start], dtype=object))
+
+    if not X_parts:
+        raise ValueError(
+            f"Ningun motor tiene al menos window_size={window_size} ciclos: no hay ventanas."
+        )
+
+    X = np.ascontiguousarray(np.concatenate(X_parts), dtype=np.float32)
+    y = np.concatenate(y_parts).astype(np.int64)
+    groups = np.concatenate(group_parts)
+    return X, y, groups, scaler

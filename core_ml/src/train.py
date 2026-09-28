@@ -10,18 +10,23 @@ Carga de datos: lee `engine_features.parquet` directamente del disco (ver
 C-MAPSS). Mismo camino para el dataset toy (smoke test local, segundos, sin
 GPU) y para el dataset completo (entrenamiento real).
 
-El modelo y el scaler NUNCA quedan como archivos sueltos: el modelo se
-registra en el MLflow Model Registry y el scaler se loguea como artefacto
-del mismo run. Solo se promueve al alias "champion" (el que sirve la API)
-si supera el Quality Gate: F2 ponderado Y recall de la clase Critical, cada
-uno contra su propio umbral en `monitoring.*` de config.yaml (ver
-`_evaluate_quality_gate`) - no un accuracy plano, ciego al costo asimetrico
-de confundir un motor "Critical" con "Healthy"/"Alert".
+El modelo y el scaler NUNCA quedan como archivos sueltos: ambos se loguean
+como artefactos del mismo run de MLflow. Solo se REGISTRA una version en el
+Model Registry, y se le mueve el alias "champion" (el que sirve la API), si:
+  1. supera el Quality Gate: F2 ponderado Y recall de la clase Critical, cada
+     uno contra su propio umbral en `monitoring.*` de config.yaml (ver
+     `_evaluate_quality_gate`) - no un accuracy plano, ciego al costo
+     asimetrico de confundir un motor "Critical" con "Healthy"/"Alert"; y
+  2. no es peor que el champion actual cuando ambos se evaluaron sobre los
+     mismos datos y el mismo split (ver `_should_replace_champion`).
+Un modelo rechazado queda solo como run (auditable), sin ensuciar el
+Registry con versiones que nunca deben servirse.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import os
 
@@ -38,6 +43,7 @@ import torch.nn as nn
 import torch.optim as optim
 import yaml
 from mlflow import MlflowClient
+from mlflow.exceptions import MlflowException
 from sklearn.metrics import fbeta_score, recall_score
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.utils.class_weight import compute_class_weight
@@ -50,8 +56,11 @@ from logging_config import configure_logging
 log = configure_logging("train")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-WINDOW_SIZE = 30
+# Raiz del repositorio (padre de core_ml/): ahi vive el .git del proyecto.
+REPO_ROOT = BASE_DIR.parent
 NUM_CLASSES = 3
+CHAMPION_ALIAS = "champion"
+EXPERIMENT_NAME = "Predictive_Maintenance_FCN"
 # 0=Healthy, 1=Alert, 2=Critical (ver data_processing.py::build_multiclass_target).
 # El costo de un falso negativo aqui (decir Healthy/Alert de un motor que en
 # realidad esta Critical) es el que justifica todo el quality gate de abajo.
@@ -145,16 +154,19 @@ class ConvTransformer(nn.Module):
 def _get_git_commit_sha() -> str:
     """Prioriza la variable de CI (el checkout de un runner puede ser un
     shallow-clone sin refs completas) y cae a `git rev-parse HEAD` en local."""
-    ci_sha = os.environ.get("CI_COMMIT_SHA")
+    ci_sha = os.environ.get("CI_COMMIT_SHA") or os.environ.get("GITHUB_SHA")
     if ci_sha:
         return ci_sha
     try:
         # Lista de argv fija (sin input de usuario) y shell=False (por
         # defecto): bandit igual marca subprocess/ruta-parcial por defecto,
         # pero aquí no hay superficie de inyección de comandos.
+        # cwd=REPO_ROOT (no core_ml/): si core_ml/ contiene un .git anidado
+        # (p.ej. restos de un clon previo), `git` resolveria ESE repo y el
+        # tag de linaje apuntaria a un commit que no es el del proyecto.
         result = subprocess.run(  # nosec B603 B607
             ["git", "rev-parse", "HEAD"],
-            cwd=BASE_DIR,
+            cwd=REPO_ROOT,
             capture_output=True,
             check=True,
             text=True,
@@ -186,6 +198,25 @@ def _build_lineage_tags(data_dir: str) -> dict[str, str]:
         "dvc_data_dir": data_dir,
         "container_image_tag": _get_container_image_tag(),
     }
+
+
+def _training_data_fingerprint(
+    X: np.ndarray, y: np.ndarray, groups: np.ndarray, val_split: float, seed: int
+) -> str:
+    """Huella del contenido EXACTO con el que se entrena y valida.
+
+    `dvc_data_hash` solo refleja el puntero `.dvc` commiteado, no lo que hay
+    realmente en disco (un `data/` modificado localmente seguiria reportando
+    el mismo hash) ni el submuestreo de prepare_training_data.py. Esta huella
+    se calcula sobre los arrays reales + los parametros del split, y es lo que
+    permite decidir si dos runs son comparables metrica a metrica.
+    """
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(X, dtype=np.float32).tobytes())
+    digest.update(np.ascontiguousarray(y, dtype=np.int64).tobytes())
+    digest.update("|".join(map(str, groups)).encode())
+    digest.update(f"val_split={val_split};seed={seed}".encode())
+    return digest.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +280,42 @@ def _split_by_engine(
     return X[train_idx], X[val_idx], y[train_idx], y[val_idx]
 
 
+def _should_replace_champion(
+    client: MlflowClient, model_name: str, fingerprint: str, challenger_f2: float
+) -> bool:
+    """Champion/challenger: no reemplazar un champion mejor por uno peor.
+
+    Pasar el gate no basta: un reentrenamiento puede superar los umbrales y
+    aun asi ser peor que el modelo que ya esta sirviendo. Solo se comparan
+    metricas si ambos runs tienen la misma huella de datos/split (misma
+    validacion); si no son comparables (datos nuevos, otro split), decide
+    solo el gate - comparar F2 de validaciones distintas no significa nada.
+    """
+    try:
+        champion = client.get_model_version_by_alias(model_name, CHAMPION_ALIAS)
+    except MlflowException:
+        return True  # Todavia no hay champion.
+
+    if champion.run_id is None:
+        return True
+    champion_run = client.get_run(champion.run_id)
+    if champion_run.data.tags.get("training_data_fingerprint") != fingerprint:
+        log.info("champion_not_comparable", champion_version=champion.version)
+        return True
+
+    champion_f2 = champion_run.data.metrics.get("best_val_f2_weighted")
+    if champion_f2 is None or challenger_f2 >= champion_f2:
+        return True
+
+    log.warning(
+        "challenger_worse_than_champion",
+        champion_version=champion.version,
+        champion_f2_weighted=champion_f2,
+        challenger_f2_weighted=challenger_f2,
+    )
+    return False
+
+
 def _evaluate_quality_gate(
     f2_weighted: float,
     critical_recall: float,
@@ -269,6 +336,28 @@ def _evaluate_quality_gate(
     return f2_weighted >= f2_threshold and critical_recall >= critical_recall_threshold
 
 
+def _checkpoint_score(
+    f2_weighted: float,
+    critical_recall: float,
+    f2_threshold: float,
+    critical_recall_threshold: float,
+) -> tuple[bool, float]:
+    """Clave de orden para elegir el mejor checkpoint: (pasa el gate, F2).
+
+    Elegir el checkpoint SOLO por F2 dejaba fuera el piso de recall de
+    Critical que el gate tambien exige. Observado con datos reales: el epoch
+    de mejor F2 (0.826) tenia recall Critical 0.61 y fallaba el gate, mientras
+    otro epoch (F2 0.807, recall 0.86) lo pasaba - y se restauraba el que
+    fallaba. Con esta clave, cualquier epoch que pasa el gate gana a uno que
+    no, y entre iguales decide el F2. No fuerza el gate: si ningun epoch lo
+    pasa, se restaura el de mejor F2 y el gate falla igual.
+    """
+    passes = _evaluate_quality_gate(
+        f2_weighted, critical_recall, f2_threshold, critical_recall_threshold
+    )
+    return passes, f2_weighted
+
+
 def train_pipeline(
     data_dir: str = "data",
     epochs: int = 3,
@@ -286,12 +375,24 @@ def train_pipeline(
     # Misma semilla que _split_by_engine mas abajo.
     torch.manual_seed(seed)
     config = load_config()
+    window_size = config["model"]["window_size"]
+    model_name = config["model"]["model_name"]
     mlflow.set_tracking_uri(
         os.environ.get("MLFLOW_TRACKING_URI", config["model"]["mlflow_tracking_uri"])
     )
-    mlflow.set_experiment("Predictive_Maintenance_FCN")
+    mlflow.set_experiment(EXPERIMENT_NAME)
 
     data_path = BASE_DIR / data_dir
+
+    # FAIL FAST: sin el scaler del mismo prepare, el modelo resultante no es
+    # servible (la API no puede escalar las lecturas crudas). Antes esto era
+    # solo un warning al FINAL del entrenamiento, con el modelo ya registrado.
+    scaler_path = data_path / "scaler.joblib"
+    if not scaler_path.exists():
+        raise FileNotFoundError(
+            f"No se encontró {scaler_path}. Ejecuta antes prepare_training_data.py "
+            f"--data-dir {data_dir} (genera parquet y scaler juntos)."
+        )
 
     log.info("loading_training_data", data_path=str(data_path))
     training_data = _load_training_data(data_path)
@@ -304,19 +405,25 @@ def train_pipeline(
     sample_array_length = len(training_data["windowed_features"].iloc[0])
     training_data = validate_training_batch(training_data, expected_length=sample_array_length)
 
-    num_features = sample_array_length // WINDOW_SIZE
+    if sample_array_length % window_size != 0:
+        raise ValueError(
+            f"windowed_features tiene longitud {sample_array_length}, que no es multiplo de "
+            f"window_size={window_size}: el parquet se genero con otra config."
+        )
+    num_features = sample_array_length // window_size
     log.info(
         "features_detected", num_features=num_features, sample_array_length=sample_array_length
     )
 
-    X = np.array(
+    X = np.stack(
         [
-            np.array(value).reshape(WINDOW_SIZE, num_features)
+            np.asarray(value, dtype=np.float32).reshape(window_size, num_features)
             for value in training_data["windowed_features"]
         ]
     )
     y = training_data["failure_type"].to_numpy()
     groups = training_data["engine_id"].to_numpy()
+    fingerprint = _training_data_fingerprint(X, y, groups, val_split, seed)
 
     X_train, X_val, y_train, y_val = _split_by_engine(X, y, groups, val_split, seed)
 
@@ -337,9 +444,17 @@ def train_pipeline(
     # importa y aun asi reportar accuracy alto. Se calcula sobre y_train
     # (nunca sobre y_val) para no filtrar informacion de validation al
     # entrenamiento.
-    class_weights = compute_class_weight(
-        class_weight="balanced", classes=np.arange(NUM_CLASSES), y=y_train
+    # Si alguna clase no aparece en y_train (dataset pequeño o muy
+    # submuestreado), compute_class_weight con las 3 clases lanza un
+    # ValueError críptico: se calculan pesos solo para las presentes y se
+    # avisa, en vez de abortar.
+    present_classes = np.unique(y_train)
+    class_weights = np.ones(NUM_CLASSES)
+    class_weights[present_classes] = compute_class_weight(
+        class_weight="balanced", classes=present_classes, y=y_train
     )
+    if len(present_classes) < NUM_CLASSES:
+        log.warning("classes_missing_in_train_split", present=present_classes.tolist())
     criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float32))
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -348,23 +463,25 @@ def train_pipeline(
     critical_recall_threshold = config["monitoring"]["critical_recall_threshold"]
 
     with mlflow.start_run(run_name="ConvTransformer_Training") as run:
-        mlflow.set_tags(lineage_tags)
+        mlflow.set_tags({**lineage_tags, "training_data_fingerprint": fingerprint})
         mlflow.log_params(
             {
-                "window_size": WINDOW_SIZE,
+                "window_size": window_size,
                 "num_features": num_features,
                 "epochs": epochs,
                 "patience": patience,
                 "learning_rate": learning_rate,
                 "batch_size": batch_size,
                 "val_split": val_split,
+                "seed": seed,
                 "train_samples": len(X_train),
                 "val_samples": len(X_val),
             }
         )
 
-        # Selecciona el mejor checkpoint por F2 ponderado (la misma metrica
-        # que decide el quality gate mas abajo), no por val_accuracy ni por
+        # Selecciona el mejor checkpoint con los MISMOS criterios del quality
+        # gate (ver _checkpoint_score: primero que lo pase, luego F2), no por
+        # val_accuracy ni por
         # asumir que el ultimo epoch es el mejor: con el dataset completo
         # (mucho mas solapamiento entre ventanas deslizantes que en el toy
         # dataset) se observo val_accuracy colapsando por overfitting bien
@@ -377,9 +494,14 @@ def train_pipeline(
         # sobre el mejor checkpoint, no una forma de forzar el quality gate.
         # Early stopping (patience): "epochs" es un TECHO, no un objetivo --
         # con ConvTransformer casi siempre converge mucho antes. Cortar en
-        # cuanto `patience` epochs seguidos no mejoran F2 ahorra computo
+        # cuanto `patience` epochs seguidos no mejoran el F2 ahorra computo
         # real sin arriesgar nada (el checkpoint restaurado sigue siendo
-        # siempre el de mejor F2, nunca el ultimo).
+        # siempre el mejor, nunca el ultimo). La paciencia mide F2 a secas y
+        # NO la clave del checkpoint: si midiera la clave, un epoch que pasa el
+        # gate temprano congelaria el contador y cortaria el entrenamiento
+        # antes de llegar a epochs posteriores mejores en ambos criterios.
+        best_score: tuple[bool, float] | None = None
+        best_f2_seen = -1.0
         best_f2_weighted = -1.0
         best_val_accuracy = -1.0
         best_critical_recall = -1.0
@@ -435,11 +557,18 @@ def train_pipeline(
                 val_critical_recall=epoch_critical_recall,
             )
 
-            if epoch_f2_weighted > best_f2_weighted:
+            epoch_score = _checkpoint_score(
+                epoch_f2_weighted, epoch_critical_recall, f2_threshold, critical_recall_threshold
+            )
+            if best_score is None or epoch_score > best_score:
+                best_score = epoch_score
                 best_f2_weighted = epoch_f2_weighted
                 best_val_accuracy = epoch_val_accuracy
                 best_critical_recall = epoch_critical_recall
                 best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
+
+            if epoch_f2_weighted > best_f2_seen:
+                best_f2_seen = epoch_f2_weighted
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
@@ -462,9 +591,19 @@ def train_pipeline(
                 "epochs debe ser >= 1: no se completo ningún epoch de entrenamiento."
             )
         model.load_state_dict(best_state_dict)
+        model.eval()
         val_accuracy = best_val_accuracy
         f2_weighted = best_f2_weighted
         critical_recall = best_critical_recall
+        # Metricas del checkpoint restaurado (las que decide el gate), como
+        # valores finales del run: las por-epoch no dicen cual se registro.
+        mlflow.log_metrics(
+            {
+                "best_val_accuracy": val_accuracy,
+                "best_val_f2_weighted": f2_weighted,
+                "best_val_critical_recall": critical_recall,
+            }
+        )
 
         log.info(
             "validation_completed",
@@ -479,10 +618,11 @@ def train_pipeline(
         signature = mlflow.models.infer_signature(
             example_input.numpy(), model(example_input).detach().numpy()
         )
+        # Se loguea SIN registered_model_name: registrar es una decision
+        # posterior al gate (ver mas abajo), no un efecto de loguear.
         model_info = mlflow.pytorch.log_model(
             model,
             name="model",
-            registered_model_name=config["model"]["model_name"],
             input_example=example_input,
             signature=signature,
             # MLflow >=3 serializa con torch.export ("pt2") por defecto, lo
@@ -494,11 +634,7 @@ def train_pipeline(
 
         # El scaler viaja SIEMPRE junto al modelo, como artefacto del mismo
         # run (nunca un .joblib suelto en un directorio local).
-        scaler_path = data_path / "scaler.joblib"
-        if scaler_path.exists():
-            mlflow.log_artifact(str(scaler_path), artifact_path="preprocessing")
-        else:
-            log.warning("scaler_not_found", scaler_path=str(scaler_path))
+        mlflow.log_artifact(str(scaler_path), artifact_path="preprocessing")
 
         quality_gate_passed = _evaluate_quality_gate(
             f2_weighted, critical_recall, f2_threshold, critical_recall_threshold
@@ -510,21 +646,25 @@ def train_pipeline(
         run_id = run.info.run_id
         log.info("lineage_tuple", mlflow_run_id=run_id, **lineage_tags)
 
-        if quality_gate_passed and model_info.registered_model_version is not None:
-            client = MlflowClient()
+        client = MlflowClient()
+        if quality_gate_passed and _should_replace_champion(
+            client, model_name, fingerprint, f2_weighted
+        ):
+            registered = mlflow.register_model(model_info.model_uri, model_name)
             client.set_registered_model_alias(
-                name=config["model"]["model_name"],
-                alias="champion",
-                version=str(model_info.registered_model_version),
+                name=model_name, alias=CHAMPION_ALIAS, version=str(registered.version)
             )
+            mlflow.set_tag("promoted_version", str(registered.version))
             log.info(
                 "quality_gate_passed",
                 val_accuracy=val_accuracy,
                 f2_weighted=f2_weighted,
                 critical_recall=critical_recall,
-                promoted_version=model_info.registered_model_version,
-                alias="champion",
+                promoted_version=registered.version,
+                alias=CHAMPION_ALIAS,
             )
+        elif quality_gate_passed:
+            mlflow.set_tag("promoted_version", "none: el champion actual es mejor")
         else:
             log.warning(
                 "quality_gate_failed",
@@ -554,11 +694,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="Early stopping: corta el entrenamiento tras N epochs seguidos sin mejorar "
-        "val_accuracy (siempre se restaura el mejor checkpoint, nunca el ultimo).",
+        "val_f2_weighted (siempre se restaura el mejor checkpoint, nunca el ultimo).",
     )
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--no-enforce-quality-gate",
         dest="enforce_quality_gate",
@@ -579,4 +720,5 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         val_split=args.val_split,
         enforce_quality_gate=args.enforce_quality_gate,
+        seed=args.seed,
     )

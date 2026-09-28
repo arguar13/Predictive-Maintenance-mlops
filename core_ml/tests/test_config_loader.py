@@ -10,7 +10,6 @@ project:
   version: "2.0.0"
 model:
   window_size: 30
-  num_features: 14
   mlflow_tracking_uri: "{mlflow_uri}"
   model_name: "Turbofan_FCN"
 monitoring:
@@ -72,11 +71,23 @@ project:
   version: "2.0.0"
 model:
   window_size: 30
-  num_features: 14
   mlflow_tracking_uri: "http://localhost:5000"
   model_name: "Turbofan_FCN"
 """
     )
 
     with pytest.raises(ValueError, match="config.yaml inválido"):
+        load_config(config_path=str(config_file))
+
+
+def test_load_config_fails_fast_on_unknown_key(tmp_path):
+    """FAIL FAST: una clave desconocida (p.ej. el antiguo model.num_features,
+    que ya no se usa) no se ignora en silencio."""
+    config_file = tmp_path / "config.yaml"
+    invalid_text = _valid_config_text().replace(
+        "  window_size: 30\n", "  window_size: 30\n  num_features: 14\n"
+    )
+    config_file.write_text(invalid_text)
+
+    with pytest.raises(ValueError, match="num_features"):
         load_config(config_path=str(config_file))

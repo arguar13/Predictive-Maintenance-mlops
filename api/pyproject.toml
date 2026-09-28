@@ -2,7 +2,7 @@
 name = "predictive-maintenance-api"
 version = "2.0.0"
 description = "Microservicio de Serving e Inferencia MLOps"
-authors = ["Tu Nombre <tu@email.com>"]
+authors = ["Armando Guarnera"]
 # La API es una APLICACION (se sirve con uvicorn), no una libreria: no tiene
 # un paquete importable llamado "predictive_maintenance_api" ni se publica
 # como wheel. Sin esto, `poetry install` intenta instalar el proyecto raiz y
@@ -38,6 +38,10 @@ torch = { version = "^2.13.0", source = "pytorch-cpu" }
 # proyectos que intercambian arrays y un scaler de scikit-learn por pickle
 # no pueden estar en majors distintos de numpy.
 numpy = ">=2.0.0"
+# api/main.py construye un DataFrame con los nombres de columna del scaler
+# (feature_names_in_) antes de scaler.transform(). Antes llegaba solo como
+# transitiva de mlflow: una dependencia importada directamente se declara.
+pandas = ">=2.2.2"
 pydantic = "^2.9.0"
 joblib = "^1.4.2"
 pyyaml = "^6.0.1"
@@ -93,7 +97,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-exclude = [".venv", "models"]
+exclude = [".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "UP", "C4", "SIM"]

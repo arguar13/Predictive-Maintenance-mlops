@@ -2,7 +2,7 @@
 name = "predictive-maintenance-data"
 version = "2.0.0"
 description = "Data Pipeline y Entrenamiento de Modelos MLOps"
-authors = ["Tu Nombre <tu@email.com>"]
+authors = ["Armando Guarnera"]
 packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
@@ -14,15 +14,12 @@ pyarrow = ">=14.0.0"
 pydantic = "^2.9.0"
 pandera = {extras = ["pandas"], version = ">=0.24.0,<1.0.0"} # Data contracts
 dvc = {extras = ["s3"], version = "^3.0.0"} # DVC restaurado y compatible
+# boto3: cliente S3 que usa MLflow para subir artefactos cuando el artifact
+# root del servidor es s3:// (MLflow de EKS) y que usa dvc-s3.
 boto3 = ">=1.38.27"
-sqlalchemy = "^1.4.54"
 
 # Machine Learning
 scikit-learn = ">=1.4.0"
-psycopg2-binary = "2.9.9"
-requests = "^2.31.0"
-matplotlib = "^3.9.2"
-seaborn = "^0.13.2"
 # Rueda CPU-only (ver [[tool.poetry.source]] "pytorch-cpu" mas abajo): nada en
 # este proyecto llama a CUDA (entrenamiento del toy dataset y del dataset
 # completo corren en CPU, ver README "sin GPU"). La rueda de PyPI por defecto

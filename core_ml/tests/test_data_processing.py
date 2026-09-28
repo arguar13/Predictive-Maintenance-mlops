@@ -1,6 +1,14 @@
+import numpy as np
 import pandas as pd
+import pytest
 
-from data_processing import build_multiclass_target, clean_and_prepare, create_sliding_windows
+from data_processing import (
+    build_multiclass_target,
+    clean_and_prepare,
+    create_sliding_windows,
+    load_and_combine_data,
+    select_engines,
+)
 
 
 def _sample_unit_df() -> pd.DataFrame:
@@ -99,3 +107,83 @@ def test_create_sliding_windows_tags_every_window_with_its_source_engine():
             assert (window < 0).all()
         else:
             assert (window > 0).all()
+
+
+def test_create_sliding_windows_does_not_mutate_input_and_returns_float32():
+    df = _two_unit_df(cycles_per_unit=5)
+    original = df.copy()
+
+    X, y, _groups, _scaler = create_sliding_windows(df, window_size=3)
+
+    pd.testing.assert_frame_equal(df, original)
+    assert X.dtype == np.float32
+    assert y.dtype == np.int64
+
+
+def test_create_sliding_windows_orders_cycles_within_each_engine():
+    df = _two_unit_df(cycles_per_unit=5).sample(frac=1.0, random_state=0)
+
+    X, _y, groups, scaler = create_sliding_windows(df, window_size=3)
+
+    # Con los ciclos ordenados, cada ventana es estrictamente creciente en
+    # sensor_1 (que se construyo como unit_idx*1000 + cycle).
+    for window in X:
+        assert np.all(np.diff(window[:, 0]) > 0)
+    assert list(scaler.feature_names_in_) == ["sensor_1"]
+    assert len(groups) == 6
+
+
+def test_create_sliding_windows_skips_engines_shorter_than_the_window():
+    df = pd.concat(
+        [
+            _two_unit_df(cycles_per_unit=5),
+            _two_unit_df(cycles_per_unit=2).iloc[:2].assign(global_unit="X"),
+        ]
+    )
+
+    _X, _y, groups, _scaler = create_sliding_windows(df, window_size=3)
+
+    assert "X" not in set(groups)
+
+
+def _multi_dataset_df(engines_per_dataset: int = 10, cycles: int = 3) -> pd.DataFrame:
+    rows = []
+    for ds in ["FD001", "FD002", "FD003", "FD004"]:
+        for unit in range(1, engines_per_dataset + 1):
+            for cycle in range(1, cycles + 1):
+                rows.append(
+                    {
+                        "unit_number": unit,
+                        "time_in_cycles": cycle,
+                        "dataset_id": ds,
+                        "global_unit": f"{ds}_{unit}",
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def test_select_engines_samples_whole_engines_evenly_across_sub_datasets():
+    df = _multi_dataset_df(engines_per_dataset=10, cycles=3)
+
+    selected = select_engines(df, max_engines=8, seed=0)
+
+    per_dataset = selected.groupby("dataset_id")["global_unit"].nunique()
+    assert per_dataset.to_dict() == {"FD001": 2, "FD002": 2, "FD003": 2, "FD004": 2}
+    # Cada motor elegido conserva todos sus ciclos (nunca filas sueltas).
+    assert (selected.groupby("global_unit").size() == 3).all()
+
+
+def test_select_engines_is_deterministic_and_optional():
+    df = _multi_dataset_df()
+
+    first = select_engines(df, max_engines=8, seed=1)
+    second = select_engines(df, max_engines=8, seed=1)
+
+    pd.testing.assert_frame_equal(first, second)
+    assert len(select_engines(df, max_engines=0)) == len(df)
+    assert len(select_engines(df, max_engines=None)) == len(df)
+
+
+def test_load_and_combine_data_fails_fast_when_no_files_are_found(tmp_path):
+    with pytest.raises(FileNotFoundError, match="train_FD00X"):
+        load_and_combine_data(str(tmp_path))

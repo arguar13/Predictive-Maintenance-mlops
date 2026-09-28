@@ -11,7 +11,6 @@ project:
   version: "2.0.0"
 model:
   window_size: 30
-  num_features: 14
   mlflow_tracking_uri: "{mlflow_uri}"
   model_name: "Turbofan_FCN"
 monitoring:
