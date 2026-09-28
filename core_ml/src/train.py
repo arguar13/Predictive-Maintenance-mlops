@@ -395,9 +395,9 @@ def _split_by_engine(
     en data_processing.py), asi que ventanas consecutivas del mismo motor se
     solapan en ~29 de sus 30 timesteps. Un split IID fila a fila (el
     train_test_split que este proyecto usaba antes) deja copias casi
-    identicas del mismo motor a ambos lados: el modelo "ve" en validation
+    identicas del mismo motor a ambos lados: el modelo "ve" al evaluar
     ventanas practicamente iguales a las que acaba de entrenar, lo que infla
-    val_accuracy -- y por lo tanto el quality gate -- sin que el modelo
+    las metricas -- y por lo tanto el quality gate -- sin que el modelo
     generalice mejor. GroupShuffleSplit, agrupando por `groups` (engine_id),
     garantiza que todas las ventanas de un motor caen enteras en train o en
     val. No estratifica por clase (GroupShuffleSplit no lo soporta): con
@@ -429,9 +429,10 @@ def _should_replace_champion(
 
     Pasar el gate no basta: un reentrenamiento puede superar los umbrales y
     aun asi ser peor que el modelo que ya esta sirviendo. Solo se comparan
-    metricas si ambos runs tienen la misma huella de datos/split (misma
-    validacion); si no son comparables (datos nuevos, otro split), decide
-    solo el gate - comparar F2 de validaciones distintas no significa nada.
+    metricas si ambos runs tienen la misma huella de datos/split (mismo
+    conjunto de test); si no son comparables (datos nuevos, otro split),
+    decide solo el gate - comparar F2 medidos sobre motores distintos no
+    significa nada.
     """
     try:
         champion = client.get_model_version_by_alias(model_name, CHAMPION_ALIAS)
