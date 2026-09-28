@@ -1,4 +1,4 @@
-"""Construye engine_features.parquet + scaler.joblib a partir de los .txt
+"""Construye engine_features.parquet + feature_names.json a partir de los .txt
 crudos de C-MAPSS.
 
 Único paso de preparación de datos del pipeline: transforma los .txt crudos
@@ -9,10 +9,10 @@ que mantener.
 """
 
 import argparse
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import joblib
 import pandas as pd
 
 from config_loader import load_config
@@ -47,13 +47,13 @@ def generate_training_parquet(
     max_engines: int | None = DEFAULT_MAX_ENGINES,
     seed: int = 42,
 ) -> Path:
-    """Construye engine_features.parquet + scaler.joblib.
+    """Construye engine_features.parquet (ventanas SIN escalar) + feature_names.json.
 
     `data_dir` es relativo a core_ml/ (p.ej. "data" para el dataset completo
-    o "data_toy" para el dataset de ~1000 filas versionado con DVC). Los dos
-    artefactos de una ejecución (parquet + scaler) quedan en el MISMO
-    directorio versionado por DVC, para que el scaler nunca sea un archivo
-    suelto sin relación con los datos que lo generaron.
+    o "data_toy" para el dataset de ~1000 filas versionado con DVC). El
+    scaler no se ajusta aqui: esta etapa no conoce el split por motor, asi
+    que lo ajusta train.py solo con los motores de train y lo registra en
+    MLflow junto al modelo.
     """
     window_size = load_config()["model"]["window_size"]
     data_path = BASE_DIR / data_dir
@@ -61,22 +61,22 @@ def generate_training_parquet(
 
     # 1. Ejecutar el pipeline de data_processing.py (cada etapa valida su
     # propio contrato de datos internamente -> FAIL FAST). El submuestreo se
-    # hace por MOTOR y ANTES de ventanear/escalar: el scaler y el conjunto de
-    # features salen exactamente de los datos con los que se entrena.
+    # hace por MOTOR y ANTES de ventanear: el conjunto de features sale
+    # exactamente de los datos con los que se entrena.
     raw_df = load_and_combine_data(str(data_path))
     raw_df = select_engines(raw_df, max_engines=max_engines, seed=seed)
     target_df = build_multiclass_target(raw_df)
     clean_df = clean_and_prepare(target_df)
 
     # Extraer las ventanas tridimensionales
-    X, y, groups, scaler = create_sliding_windows(clean_df, window_size=window_size)
+    X, y, groups, feature_names = create_sliding_windows(clean_df, window_size=window_size)
     num_features = X.shape[2]
     log.info(
         "windows_created",
         engines=int(raw_df["global_unit"].nunique()),
         windows=len(X),
         num_features=num_features,
-        features=list(scaler.feature_names_in_),
+        features=feature_names,
     )
 
     # 2. Aplanar las ventanas a filas de un DataFrame (el formato que
@@ -120,11 +120,12 @@ def generate_training_parquet(
     features_df.to_parquet(features_path, index=False)
     log.info("parquet_written", features_path=str(features_path), rows=len(features_df))
 
-    # 4. Persistir el scaler DENTRO del mismo directorio versionado por DVC
-    # que los datos que lo generaron (nunca un archivo suelto en models/).
-    scaler_path = data_path / "scaler.joblib"
-    joblib.dump(scaler, scaler_path)
-    log.info("scaler_written", scaler_path=str(scaler_path), num_features=num_features)
+    # 4. Orden de las columnas dentro de cada ventana aplanada: train.py lo
+    # necesita para ajustar un scaler con nombres de feature (feature_names_in_),
+    # que es lo que la API publica en /health.
+    feature_names_path = data_path / "feature_names.json"
+    feature_names_path.write_text(json.dumps(feature_names, indent=2))
+    log.info("feature_names_written", path=str(feature_names_path), num_features=num_features)
 
     return data_path
 

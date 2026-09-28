@@ -30,13 +30,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import math
 import os
 
 # subprocess solo se usa con argv fijo (sin input externo) en _get_git_commit_sha
 import subprocess  # nosec B404
+import tempfile
 from pathlib import Path
 
+import joblib
 import mlflow
 import mlflow.pytorch
 import numpy as np
@@ -47,13 +50,14 @@ import torch.optim as optim
 import yaml
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
-from sklearn.metrics import fbeta_score, recall_score
+from sklearn.metrics import classification_report, confusion_matrix, fbeta_score, recall_score
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, TensorDataset
 
 from config_loader import load_config
 from data_contracts import validate_training_batch
+from data_processing import fit_window_scaler, scale_windows
 from logging_config import configure_logging
 
 log = configure_logging("train")
@@ -68,6 +72,7 @@ EXPERIMENT_NAME = "Predictive_Maintenance_FCN"
 # El costo de un falso negativo aqui (decir Healthy/Alert de un motor que en
 # realidad esta Critical) es el que justifica todo el quality gate de abajo.
 CRITICAL_CLASS_INDEX = 2
+CLASS_NAMES = ("Healthy", "Alert", "Critical")
 
 
 class PositionalEncoding(nn.Module):
@@ -97,14 +102,12 @@ class ConvTransformer(nn.Module):
     sensores de corto plazo antes de pasarlos al TransformerEncoder, que
     modela dependencias de largo plazo entre timesteps de la ventana.
 
-    Reemplaza al FCN puramente convolucional que este proyecto usaba antes:
-    en un benchmark propio (5 arquitecturas sobre este mismo tipo de tarea
-    C-MAPSS) fue la de mejor Macro F1/Accuracy, por delante de
-    InceptionTime, Vanilla Transformer, PatchTST y el FCN baseline. Se omiten
-    las ramas de features estaticas/categoricas del benchmark original
-    (embedding de "dataset_id", features numericas estaticas): el pipeline
-    de preparación de datos de este proyecto solo produce `windowed_features`,
-    sin esas columnas adicionales.
+    Por que esta combinacion: la degradacion aparece como tendencias de
+    pocos ciclos repartidas entre sensores correlacionados (lo que una
+    convolucion local captura con pocos parametros), y la atencion relaciona
+    cualquier par de timesteps de la ventana sin el cuello de botella
+    secuencial de una RNN. Es deliberadamente pequeño (d_model=64, 2 capas)
+    para entrenar el dataset completo en CPU.
     """
 
     def __init__(
@@ -179,6 +182,27 @@ def _get_git_commit_sha() -> str:
         return "unknown"
 
 
+def _is_git_worktree_dirty() -> str:
+    """ "true" si hay cambios sin commitear en archivos versionados.
+
+    Sin esta marca, un run entrenado con codigo modificado localmente queda
+    atribuido a un commit que NO contiene ese codigo: la tupla de linaje
+    pareceria reproducible sin serlo. Los archivos sin trackear (datos,
+    venvs) no cuentan.
+    """
+    try:
+        result = subprocess.run(  # nosec B603 B607
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+        return "true" if result.stdout.strip() else "false"
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def _get_dvc_data_hash(data_dir: str) -> str:
     """Lee el hash md5 de `<data_dir>.dvc` (p.ej. data.dvc o data_toy.dvc)."""
     dvc_file = BASE_DIR / f"{data_dir}.dvc"
@@ -197,6 +221,7 @@ def _get_container_image_tag() -> str:
 def _build_lineage_tags(data_dir: str) -> dict[str, str]:
     return {
         "git_commit_sha": _get_git_commit_sha(),
+        "git_dirty": _is_git_worktree_dirty(),
         "dvc_data_hash": _get_dvc_data_hash(data_dir),
         "dvc_data_dir": data_dir,
         "container_image_tag": _get_container_image_tag(),
@@ -290,11 +315,19 @@ def _split_train_val_test(
     return train, val, test
 
 
-def _evaluate(model: nn.Module, X: torch.Tensor, y: np.ndarray) -> dict[str, float]:
-    """Accuracy, F2 ponderado y recall de Critical del modelo sobre (X, y)."""
+def _predict(model: nn.Module, X: torch.Tensor) -> np.ndarray:
     model.eval()
     with torch.no_grad():
-        predictions = torch.argmax(model(X), dim=1).numpy()
+        return torch.argmax(model(X), dim=1).numpy()
+
+
+def _evaluate(model: nn.Module, X: torch.Tensor, y: np.ndarray) -> dict[str, float]:
+    """Accuracy, F2 ponderado y recall de Critical del modelo sobre (X, y)."""
+    return _gate_metrics(y, _predict(model, X))
+
+
+def _gate_metrics(y: np.ndarray, predictions: np.ndarray) -> dict[str, float]:
+    """Las metricas que deciden checkpoint y quality gate."""
     return {
         "accuracy": float((predictions == y).mean()),
         "f2_weighted": float(
@@ -306,6 +339,47 @@ def _evaluate(model: nn.Module, X: torch.Tensor, y: np.ndarray) -> dict[str, flo
             )[CRITICAL_CLASS_INDEX]
         ),
     }
+
+
+def _test_diagnostics(
+    y_true: np.ndarray, y_pred: np.ndarray, majority_class: int
+) -> tuple[dict[str, float], dict]:
+    """Metricas que muestran las debilidades, no solo las que deciden el gate.
+
+    Las ponderadas estan dominadas por Healthy (~2/3 de las ventanas): el F1
+    macro y las metricas por clase exponen a la clase mas dificil (Alert). La
+    linea base "siempre la clase mayoritaria de train" da la referencia de
+    cuanto aporta el modelo. Devuelve (metricas escalares, reporte completo).
+    """
+    labels = list(range(NUM_CLASSES))
+    report = classification_report(
+        y_true, y_pred, labels=labels, target_names=CLASS_NAMES, output_dict=True, zero_division=0
+    )
+    metrics = {
+        "test_f1_macro": report["macro avg"]["f1-score"],
+        "test_f1_weighted": report["weighted avg"]["f1-score"],
+    }
+    for name in CLASS_NAMES:
+        for key in ("precision", "recall", "f1-score"):
+            metrics[f"test_{name.lower()}_{key.replace('-score', '')}"] = report[name][key]
+
+    baseline = np.full_like(y_true, majority_class)
+    baseline_report = classification_report(
+        y_true, baseline, labels=labels, target_names=CLASS_NAMES, output_dict=True, zero_division=0
+    )
+    metrics["baseline_test_accuracy"] = baseline_report["accuracy"]
+    metrics["baseline_test_f1_macro"] = baseline_report["macro avg"]["f1-score"]
+
+    artifact = {
+        "classification_report": report,
+        "confusion_matrix": {
+            "labels": list(CLASS_NAMES),
+            "rows_are": "true class",
+            "matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
+        },
+        "baseline_majority_class": CLASS_NAMES[majority_class],
+    }
+    return metrics, artifact
 
 
 def _split_by_engine(
@@ -453,15 +527,15 @@ def train_pipeline(
 
     data_path = BASE_DIR / data_dir
 
-    # FAIL FAST: sin el scaler del mismo prepare, el modelo resultante no es
-    # servible (la API no puede escalar las lecturas crudas). Antes esto era
-    # solo un warning al FINAL del entrenamiento, con el modelo ya registrado.
-    scaler_path = data_path / "scaler.joblib"
-    if not scaler_path.exists():
+    # FAIL FAST: sin el orden de features no se puede ajustar un scaler con
+    # nombres de columna, y la API no podria publicar que espera cada fila.
+    feature_names_path = data_path / "feature_names.json"
+    if not feature_names_path.exists():
         raise FileNotFoundError(
-            f"No se encontró {scaler_path}. Ejecuta antes prepare_training_data.py "
-            f"--data-dir {data_dir} (genera parquet y scaler juntos)."
+            f"No se encontró {feature_names_path}. Ejecuta antes prepare_training_data.py "
+            f"--data-dir {data_dir} (genera el parquet y feature_names.json juntos)."
         )
+    feature_names: list[str] = json.loads(feature_names_path.read_text())
 
     log.info("loading_training_data", data_path=str(data_path))
     training_data = _load_training_data(data_path)
@@ -480,6 +554,11 @@ def train_pipeline(
             f"window_size={window_size}: el parquet se genero con otra config."
         )
     num_features = sample_array_length // window_size
+    if len(feature_names) != num_features:
+        raise ValueError(
+            f"feature_names.json declara {len(feature_names)} features y el parquet "
+            f"{num_features}: vuelve a ejecutar prepare_training_data.py."
+        )
     log.info(
         "features_detected", num_features=num_features, sample_array_length=sample_array_length
     )
@@ -495,8 +574,13 @@ def train_pipeline(
     fingerprint = _training_data_fingerprint(X, y, groups, val_split, test_split, seed)
 
     train_idx, val_idx, test_idx = _split_train_val_test(groups, val_split, test_split, seed)
-    X_train, y_train = X[train_idx], y[train_idx]
-    y_val, y_test = y[val_idx], y[test_idx]
+    # Scaler ajustado SOLO con los motores de train: si viera val/test, sus
+    # medias y desviaciones filtrarian informacion de los motores con los que
+    # luego se elige el checkpoint y se certifica el modelo.
+    scaler = fit_window_scaler(X[train_idx], feature_names)
+    X_train, y_train = scale_windows(scaler, X[train_idx]), y[train_idx]
+    X_val, y_val = scale_windows(scaler, X[val_idx]), y[val_idx]
+    X_test, y_test = scale_windows(scaler, X[test_idx]), y[test_idx]
     log.info(
         "engine_split",
         train_engines=len(np.unique(groups[train_idx])),
@@ -506,8 +590,8 @@ def train_pipeline(
 
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
     y_train_tensor = torch.tensor(y_train, dtype=torch.long)
-    X_val_tensor = torch.tensor(X[val_idx], dtype=torch.float32)
-    X_test_tensor = torch.tensor(X[test_idx], dtype=torch.float32)
+    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
+    X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
 
     train_loader = DataLoader(
         TensorDataset(X_train_tensor, y_train_tensor), batch_size=batch_size, shuffle=True
@@ -655,7 +739,8 @@ def train_pipeline(
         model.load_state_dict(best_state_dict)
         # Metricas finales del checkpoint restaurado. Las de val se reportan
         # para diagnostico; el gate usa SOLO las de test (motores no vistos).
-        test_metrics = _evaluate(model, X_test_tensor, y_test)
+        test_predictions = _predict(model, X_test_tensor)
+        test_metrics = _gate_metrics(y_test, test_predictions)
         test_accuracy = test_metrics["accuracy"]
         f2_weighted = test_metrics["f2_weighted"]
         critical_recall = test_metrics["critical_recall"]
@@ -669,6 +754,10 @@ def train_pipeline(
                 "test_critical_recall": critical_recall,
             }
         )
+        majority_class = int(np.bincount(y_train, minlength=NUM_CLASSES).argmax())
+        diagnostics, test_report = _test_diagnostics(y_test, test_predictions, majority_class)
+        mlflow.log_metrics(diagnostics)
+        mlflow.log_dict(test_report, "evaluation/test_report.json")
 
         log.info(
             "evaluation_completed",
@@ -677,6 +766,8 @@ def train_pipeline(
             test_accuracy=test_accuracy,
             test_f2_weighted=f2_weighted,
             test_critical_recall=critical_recall,
+            test_f1_macro=diagnostics["test_f1_macro"],
+            test_alert_recall=diagnostics["test_alert_recall"],
             f2_threshold=f2_threshold,
             critical_recall_threshold=critical_recall_threshold,
         )
@@ -699,9 +790,12 @@ def train_pipeline(
             serialization_format="pickle",
         )
 
-        # El scaler viaja SIEMPRE junto al modelo, como artefacto del mismo
-        # run (nunca un .joblib suelto en un directorio local).
-        mlflow.log_artifact(str(scaler_path), artifact_path="preprocessing")
+        # El scaler (ajustado en train) viaja SIEMPRE junto al modelo, como
+        # artefacto del mismo run: es el que la API descarga para escalar.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scaler_file = Path(tmp_dir) / "scaler.joblib"
+            joblib.dump(scaler, scaler_file)
+            mlflow.log_artifact(str(scaler_file), artifact_path="preprocessing")
 
         quality_gate_passed = _evaluate_quality_gate(
             f2_weighted, critical_recall, f2_threshold, critical_recall_threshold

@@ -53,8 +53,8 @@ graph TD
 
 **Flow, in words:**
 
-1. Raw C-MAPSS data (versioned with DVC) is turned by `prepare_training_data.py` into 30-timestep sliding windows (`engine_features.parquet` + `scaler.joblib`), from a sample of whole engines spread evenly across FD001–FD004.
-2. `train.py` trains the ConvTransformer and logs the run to MLflow (model + scaler + metrics + lineage tags). It is only registered and moved to the `champion` alias if it beats the quality gate and isn't worse than the current champion.
+1. Raw C-MAPSS data (versioned with DVC) is turned by `prepare_training_data.py` into unscaled 30-timestep sliding windows (`engine_features.parquet` + `feature_names.json`), from a sample of whole engines spread evenly across FD001–FD004.
+2. `train.py` splits engines into train/val/test, fits the `StandardScaler` on the train engines only, trains the ConvTransformer and logs the run to MLflow (model + scaler + metrics + lineage tags). It is only registered and moved to the `champion` alias if it beats the quality gate and isn't worse than the current champion.
 3. The FastAPI service loads the `champion` model and its scaler from MLflow (retrying until one exists), and serves `/predict`.
 4. GitLab CI: `lint_test` (format + ruff + pytest) on every push; `build_push` (build + push to ECR) and a manual `deploy` (`kubectl apply -k`) only on the default branch. `train` is a separate manual job, since a full training run can take from minutes to hours and shouldn't block every push. GitHub Actions runs the same quality checks plus a Docker build, with no AWS access.
 
@@ -83,9 +83,9 @@ graph TD
 
 **Data.** Each stage validates its own output against an explicit schema (`core_ml/src/data_contracts.py`, using Pandera) before letting the next, more expensive stage run. A malformed dataset or a `NaN` reading is rejected immediately. RUL is derived per engine as `max(cycle) - cycle` and grouped into 3 classes: `RUL > 60` → Healthy, `30 < RUL <= 60` → Alert, `RUL <= 30` → Critical.
 
-**The model.** `ConvTransformer` (`core_ml/src/train.py`) runs a `Conv1d` layer over the 30-timestep window to extract local sensor patterns, adds sinusoidal positional encoding, and feeds a 2-layer `TransformerEncoder` that models long-range dependencies. It was selected after benchmarking 5 architectures on this same C-MAPSS task.
+**The model.** `ConvTransformer` (`core_ml/src/train.py`) runs a `Conv1d` layer over the 30-timestep window to extract local sensor patterns, adds sinusoidal positional encoding, and feeds a 2-layer `TransformerEncoder` that models long-range dependencies. The convolution captures short trends across correlated sensors with few parameters, and attention relates any two timesteps of the window without an RNN's sequential bottleneck. It is deliberately small (`d_model=64`, 2 layers) so the full dataset trains on a CPU.
 
-**Quality gate.** Engines are split three ways, never row by row (sliding windows overlap heavily, and an IID split would leak near-duplicates): **train** (60%) fits the weights, **val** (20%) picks the best checkpoint and drives early stopping, and **test** (20%) is used only once, on the restored checkpoint, to decide the gate. Gating on val would be optimistic, since val already chose the epoch. Promotion to the `champion` alias requires beating **two** thresholds in `config/config.yaml`: `f2_weighted_threshold` **and** `critical_recall_threshold` (a hard floor on the Critical class recall specifically, so a model can't compensate for failing on the class that matters most with good performance on the other two). Passing the gate isn't enough to replace a champion: if the current champion was evaluated on the exact same data and split (same `training_data_fingerprint` tag), the challenger also has to match or beat its F2. Only runs that are promoted get a version in the Model Registry; rejected runs stay as plain MLflow runs, auditable but never servable.
+**Quality gate.** Engines are split three ways, never row by row (sliding windows overlap heavily, and an IID split would leak near-duplicates): **train** (60%) fits the weights, **val** (20%) picks the best checkpoint and drives early stopping, and **test** (20%) is used only once, on the restored checkpoint, to decide the gate. Gating on val would be optimistic, since val already chose the epoch. Promotion to the `champion` alias requires beating **two** thresholds in `config/config.yaml`: `f2_weighted_threshold` **and** `critical_recall_threshold` (a hard floor on the Critical class recall specifically, so a model can't compensate for failing on the class that matters most with good performance on the other two). Passing the gate isn't enough to replace a champion: if the current champion was evaluated on the exact same data and split (same `training_data_fingerprint` tag), the challenger also has to match or beat its F2. Only runs that are promoted get a version in the Model Registry; rejected runs stay as plain MLflow runs, auditable but never servable. Every run also logs the metrics that expose weaknesses rather than hide them: macro F1, per-class precision/recall/F1, a majority-class baseline, and the test confusion matrix (`evaluation/test_report.json`).
 
 **Toy dataset.** `core_ml/data_toy/` (~1000 rows, versioned with DVC, or rebuilt locally with `make build-toy-dataset`) lets the whole pipeline run in seconds, without a GPU — this is what `make smoke-test` runs. CI doesn't need DVC at all: `core_ml/tests/test_pipeline_e2e.py` runs prepare → train → MLflow → Registry end to end on a synthetic dataset with the exact C-MAPSS format.
 
@@ -110,7 +110,7 @@ graph TD
 ├── core_ml/                # Data + training (own Poetry project)
 │   ├── src/
 │   │   ├── data_contracts.py    # Pandera contracts (fail fast)
-│   │   ├── data_processing.py   # Cleanup + sliding windows + scaler
+│   │   ├── data_processing.py   # Cleanup + sliding windows + train-only scaler
 │   │   ├── prepare_training_data.py  # Generates engine_features.parquet
 │   │   └── train.py             # ConvTransformer + quality gate + MLflow
 │   ├── data/ · data_toy/        # Datasets (DVC-versioned, gitignored)
@@ -157,8 +157,8 @@ make ci         # same as the lint_test job in GitLab CI
 ### 4. Validate the pipeline with the toy dataset (seconds, no GPU)
 
 ```bash
-make dvc-pull            # downloads data/ and data_toy/ from the DVC S3 remote (real AWS)
-make build-toy-dataset   # ...or rebuild data_toy/ locally from core_ml/data/
+# first put the C-MAPSS files in core_ml/data/ (see "Getting the data")
+make build-toy-dataset   # builds data_toy/ (5 engines) from core_ml/data/
 make smoke-test          # contracts + training + MLflow + quality gate
 ```
 
@@ -190,17 +190,22 @@ A champion trained on the toy dataset (5 engines, 1 of them in validation) only 
 
 Host ports are shifted (8001, 5001, 4567, 5433 instead of the defaults) so this stack can run alongside other projects on the same machine without port conflicts; the containers' internal ports don't change.
 
+## Getting the data
+
+The model is trained on NASA's public C-MAPSS turbofan dataset (A. Saxena and K. Goebel, 2008, *Turbofan Engine Degradation Simulation Data Set*, NASA Prognostics Data Repository, NASA Ames Research Center). Download entry **6. Turbofan Engine Degradation Simulation** from the [NASA Prognostics Center of Excellence Data Set Repository](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/), unzip it, and copy `train_FD001.txt` … `train_FD004.txt` into `core_ml/data/` (the pipeline only reads the four training files).
+
+`make dvc-pull` does the same from the project's DVC remote, which lives on the maintainer's private S3 bucket, so it only works with access to that AWS account.
+
 ## Training the model
 
 ```bash
-make dvc-pull      # pulls the full core_ml/data/
 make train         # prepares features + trains (25 epochs, patience 5) + quality gate (~30 min on CPU)
 ```
 
 Under the hood, `make train` chains the two stages of the pipeline:
 
-1. **`prepare_training_data.py`** reads the raw C-MAPSS `.txt` files, samples whole engines evenly across FD001–FD004 (all 709 engines by default; `--max-engines N` takes a faster stratified sample), cleans and windows them (`data_processing.py`), and writes `engine_features.parquet` + `scaler.joblib` into the same DVC-tracked data directory.
-2. **`train.py`** loads that parquet, validates it against its data contract, trains the `ConvTransformer` with an engine-grouped train/val/test split, and logs the run to MLflow — model, scaler, metrics, and a lineage tuple of `git commit + DVC data hash + hyperparameters + MLflow run ID + container image tag`. It only registers the model and moves the `champion` alias to it if it clears the quality gate and isn't worse than a comparable champion.
+1. **`prepare_training_data.py`** reads the raw C-MAPSS `.txt` files, samples whole engines evenly across FD001–FD004 (all 709 engines by default; `--max-engines N` takes a faster stratified sample), cleans and windows them (`data_processing.py`), and writes the unscaled windows (`engine_features.parquet`) and their column order (`feature_names.json`) into the same DVC-tracked data directory.
+2. **`train.py`** loads that parquet, validates it against its data contract, splits engines into train/val/test, fits the scaler on the train engines only, trains the `ConvTransformer`, and logs the run to MLflow — model, scaler, metrics, and a lineage tuple of `git commit (+ git_dirty flag) + DVC data hash + hyperparameters + MLflow run ID + container image tag`. It only registers the model and moves the `champion` alias to it if it clears the quality gate and isn't worse than a comparable champion.
 
 `train.py` is reproducible (`torch.manual_seed(42)`, a seeded train/val/test split grouped by engine): given an MLflow run, you can always reconstruct which commit, which data version, and which image produced it, via the run's lineage tags. In GitLab CI, the `train` job is manual (it doesn't run on every push) because training against the full dataset can take minutes to hours.
 

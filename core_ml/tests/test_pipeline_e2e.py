@@ -6,6 +6,7 @@ S3 y sin servidor de MLflow: valida contratos, ventaneo, entrenamiento,
 logging de artefactos y la regla "solo se registra lo que pasa el gate".
 """
 
+import mlflow
 import numpy as np
 import pytest
 from mlflow import MlflowClient
@@ -54,9 +55,11 @@ def prepared_data_dir(tmp_path, monkeypatch):
     return data_dir
 
 
-def test_prepare_writes_parquet_and_scaler(prepared_data_dir):
+def test_prepare_writes_raw_windows_and_feature_names(prepared_data_dir):
     assert (prepared_data_dir / "engine_features.parquet").exists()
-    assert (prepared_data_dir / "scaler.joblib").exists()
+    assert (prepared_data_dir / "feature_names.json").exists()
+    # El scaler NO se ajusta en prepare: lo ajusta train.py solo con train.
+    assert not (prepared_data_dir / "scaler.joblib").exists()
 
 
 def test_rejected_model_is_logged_but_never_registered(prepared_data_dir, monkeypatch):
@@ -78,6 +81,10 @@ def test_rejected_model_is_logged_but_never_registered(prepared_data_dir, monkey
     assert int(run.data.params["test_samples"]) > 0
     artifacts = {a.path for a in client.list_artifacts(run_id, "preprocessing")}
     assert "preprocessing/scaler.joblib" in artifacts
+    assert {"test_f1_macro", "test_alert_recall", "baseline_test_f1_macro"} <= set(run.data.metrics)
+    assert run.data.tags["git_dirty"] in {"true", "false", "unknown"}
+    report = mlflow.artifacts.load_dict(f"runs:/{run_id}/evaluation/test_report.json")
+    assert len(report["confusion_matrix"]["matrix"]) == 3
     assert client.search_registered_models() == []
 
 

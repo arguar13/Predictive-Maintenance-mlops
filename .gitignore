@@ -66,3 +66,6 @@ htmlcov/
 # Documentacion local (no versionar)
 GUIA_EJECUCION_PROYECTO 611.docx
 Guia completa del proyecto 611/
+
+# Borradores del blog del portafolio (texto, imagenes, portada): no se versionan
+blog/

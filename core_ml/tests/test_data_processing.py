@@ -6,7 +6,9 @@ from data_processing import (
     build_multiclass_target,
     clean_and_prepare,
     create_sliding_windows,
+    fit_window_scaler,
     load_and_combine_data,
+    scale_windows,
     select_engines,
 )
 
@@ -90,30 +92,29 @@ def _two_unit_df(cycles_per_unit: int = 5) -> pd.DataFrame:
 def test_create_sliding_windows_tags_every_window_with_its_source_engine():
     df = _two_unit_df(cycles_per_unit=5)
 
-    X, y, groups, _scaler = create_sliding_windows(df, window_size=3)
+    X, y, groups, feature_names = create_sliding_windows(df, window_size=3)
 
     # 5 ciclos, ventana de 3 -> 3 ventanas por motor, 2 motores -> 6 ventanas.
     assert X.shape == (6, 3, 1)
     assert len(y) == len(groups) == 6
     assert set(groups) == {"FD001_1", "FD001_2"}
-    # sensor_1 se construyo como unit_idx*1000 + cycle: el rango de FD001_1
-    # (1-5) queda muy por debajo de la media combinada con FD001_2
-    # (1000-1004), asi que tras el StandardScaler interno el signo del
-    # valor escalado por si solo ya delata de que motor vino cada ventana -
-    # una forma robusta de verificar que create_sliding_windows nunca
-    # mezcla filas de dos motores distintos dentro de una misma ventana.
+    assert feature_names == ["sensor_1"]
+    # sensor_1 se construyo como unit_idx*1000 + cycle (valores crudos, sin
+    # escalar): FD001_1 vive en 1-5 y FD001_2 en 1001-1005, asi que el valor
+    # delata de que motor vino cada ventana - verifica que nunca se mezclan
+    # filas de dos motores dentro de una misma ventana.
     for window, group in zip(X, groups, strict=True):
         if group == "FD001_1":
-            assert (window < 0).all()
+            assert (window < 1000).all()
         else:
-            assert (window > 0).all()
+            assert (window > 1000).all()
 
 
 def test_create_sliding_windows_does_not_mutate_input_and_returns_float32():
     df = _two_unit_df(cycles_per_unit=5)
     original = df.copy()
 
-    X, y, _groups, _scaler = create_sliding_windows(df, window_size=3)
+    X, y, _groups, _features = create_sliding_windows(df, window_size=3)
 
     pd.testing.assert_frame_equal(df, original)
     assert X.dtype == np.float32
@@ -123,13 +124,12 @@ def test_create_sliding_windows_does_not_mutate_input_and_returns_float32():
 def test_create_sliding_windows_orders_cycles_within_each_engine():
     df = _two_unit_df(cycles_per_unit=5).sample(frac=1.0, random_state=0)
 
-    X, _y, groups, scaler = create_sliding_windows(df, window_size=3)
+    X, _y, groups, _features = create_sliding_windows(df, window_size=3)
 
     # Con los ciclos ordenados, cada ventana es estrictamente creciente en
     # sensor_1 (que se construyo como unit_idx*1000 + cycle).
     for window in X:
         assert np.all(np.diff(window[:, 0]) > 0)
-    assert list(scaler.feature_names_in_) == ["sensor_1"]
     assert len(groups) == 6
 
 
@@ -141,7 +141,7 @@ def test_create_sliding_windows_skips_engines_shorter_than_the_window():
         ]
     )
 
-    _X, _y, groups, _scaler = create_sliding_windows(df, window_size=3)
+    _X, _y, groups, _features = create_sliding_windows(df, window_size=3)
 
     assert "X" not in set(groups)
 
@@ -187,3 +187,20 @@ def test_select_engines_is_deterministic_and_optional():
 def test_load_and_combine_data_fails_fast_when_no_files_are_found(tmp_path):
     with pytest.raises(FileNotFoundError, match="train_FD00X"):
         load_and_combine_data(str(tmp_path))
+
+
+def test_window_scaler_uses_only_the_windows_it_is_fitted_on():
+    train = np.full((4, 3, 2), 10.0, dtype=np.float32)
+    train[:, :, 1] = 20.0
+    train[0] += 1.0  # algo de varianza
+    other = np.full((2, 3, 2), 1000.0, dtype=np.float32)  # val/test muy distintos
+
+    scaler = fit_window_scaler(train, ["a", "b"])
+
+    # La media sale solo de train: los valores de "other" no la contaminan.
+    np.testing.assert_allclose(scaler.mean_, train.reshape(-1, 2).mean(axis=0), rtol=1e-6)
+    assert list(scaler.feature_names_in_) == ["a", "b"]
+    scaled = scale_windows(scaler, other)
+    assert scaled.shape == other.shape
+    assert scaled.dtype == np.float32
+    assert (scaled > 10).all()  # fuera de la distribucion de train, como debe ser

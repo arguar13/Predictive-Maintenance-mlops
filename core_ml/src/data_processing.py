@@ -109,9 +109,9 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
 
 def create_sliding_windows(
     df: pd.DataFrame, window_size: int = 30
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, StandardScaler]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Genera ventanas tridimensionales (Muestras, Ventana Temporal,
-    Características) para PyTorch.
+    Características) SIN escalar, y el orden de las features.
 
     Devuelve también `groups`: el `global_unit` (motor físico) que originó
     cada ventana. Con stride=1, las ventanas de un mismo motor se solapan
@@ -121,19 +121,10 @@ def create_sliding_windows(
     debe usar `groups` con GroupShuffleSplit, nunca un split IID sobre las
     filas de X/y directamente.
 
-    El scaler se ajusta sobre un DataFrame (no un ndarray) para que guarde
-    `feature_names_in_`: la API lo usa para publicar el orden exacto de
-    columnas que espera cada fila de /predict.
-
-    Nota: el StandardScaler se ajusta sobre TODAS las filas de `df`, no solo
-    sobre un futuro subconjunto de entrenamiento. Es una fuga de información
-    más leve que la del split (estadísticas globales de escalado, no
-    duplicación de muestras) y separar el fit por partición requeriría que
-    esta etapa de preprocesamiento (que no conoce val_split, un parámetro de
-    train.py que se decide por corrida) y el split de entrenamiento
-    coordinen una misma partición de motores - un acoplamiento entre etapas
-    desproporcionado para el tamaño del riesgo. Aceptado conscientemente,
-    no pasado por alto.
+    El escalado NO ocurre aquí: esta etapa no conoce el split por motor, y
+    ajustar el scaler sobre todos los motores filtraría estadísticas de
+    val/test al entrenamiento. train.py lo ajusta solo con los motores de
+    train (ver `fit_window_scaler`).
     """
     features = feature_columns(df)
 
@@ -141,9 +132,7 @@ def create_sliding_windows(
     # ciclos consecutivos, y no se modifica el DataFrame del llamador.
     ordered = df.sort_values(["global_unit", "time_in_cycles"], kind="stable")
 
-    scaler = StandardScaler()
-    scaled = scaler.fit_transform(ordered[features]).astype(np.float32)
-
+    values = ordered[features].to_numpy(dtype=np.float32)
     units = ordered["global_unit"].to_numpy()
     labels = ordered["failure_type"].to_numpy()
 
@@ -160,7 +149,7 @@ def create_sliding_windows(
             continue
         # sliding_window_view devuelve (n_windows, n_features, window_size):
         # vistas sin copia, en vez de un bucle Python con .iloc por ventana.
-        windows = np.lib.stride_tricks.sliding_window_view(scaled[start:end], window_size, axis=0)
+        windows = np.lib.stride_tricks.sliding_window_view(values[start:end], window_size, axis=0)
         X_parts.append(windows.transpose(0, 2, 1))
         # Etiqueta del último ciclo de la ventana
         y_parts.append(labels[start + window_size - 1 : end])
@@ -174,4 +163,23 @@ def create_sliding_windows(
     X = np.ascontiguousarray(np.concatenate(X_parts), dtype=np.float32)
     y = np.concatenate(y_parts).astype(np.int64)
     groups = np.concatenate(group_parts)
-    return X, y, groups, scaler
+    return X, y, groups, features
+
+
+def fit_window_scaler(X_train: np.ndarray, feature_names: list[str]) -> StandardScaler:
+    """Ajusta el StandardScaler SOLO con las ventanas de train.
+
+    Se ajusta sobre un DataFrame con los nombres de columna para que el scaler
+    guarde `feature_names_in_`: la API lo usa para publicar el orden exacto de
+    columnas que espera cada fila de /predict. Cada ciclo aparece en varias
+    ventanas solapadas; eso pondera un poco más los ciclos centrales, pero
+    media y desviación resultan prácticamente iguales a las por fila.
+    """
+    rows = X_train.reshape(-1, X_train.shape[2])
+    return StandardScaler().fit(pd.DataFrame(rows, columns=feature_names))
+
+
+def scale_windows(scaler: StandardScaler, X: np.ndarray) -> np.ndarray:
+    """Aplica el scaler (ajustado en train) a ventanas (n, window, features)."""
+    flat = pd.DataFrame(X.reshape(-1, X.shape[2]), columns=scaler.feature_names_in_)
+    return np.asarray(scaler.transform(flat), dtype=np.float32).reshape(X.shape)

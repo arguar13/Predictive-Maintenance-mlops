@@ -87,10 +87,10 @@ coverage: ## Ejecuta pytest con cobertura en api/ y core_ml/
 build-toy-dataset: ## Regenera el dataset toy (~1000 filas, fijo) desde el dataset completo
 	poetry -C $(CORE) run python scripts/build_toy_dataset.py
 
-prepare-toy: ## Construye engine_features.parquet + scaler.joblib del dataset toy
+prepare-toy: ## Construye engine_features.parquet + feature_names.json del dataset toy
 	poetry -C $(CORE) run python src/prepare_training_data.py --data-dir data_toy
 
-prepare-data: ## Construye engine_features.parquet + scaler.joblib del dataset completo
+prepare-data: ## Construye engine_features.parquet + feature_names.json del dataset completo
 	poetry -C $(CORE) run python src/prepare_training_data.py --data-dir data
 
 train: prepare-data ## Entrena con el dataset completo (exige el quality gate)
