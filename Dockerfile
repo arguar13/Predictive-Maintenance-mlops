@@ -1,64 +1,70 @@
-FROM python:3.12-slim
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# Etapa 1 (builder): resuelve api/poetry.lock en un venv aislado.
+#
+# Poetry vive en SU PROPIO venv (/opt/poetry) y las dependencias de la app en
+# otro (/opt/venv). Antes ambos compartian el site-packages del sistema
+# (POETRY_VIRTUALENVS_CREATE=false), y el lock de la app pisaba librerias que
+# el propio Poetry necesita: de ahi los `pip install --force-reinstall` de
+# setuptools/packaging que habia que encadenar para que la imagen arrancara.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
 
 # Debe coincidir con la version usada para generar api/poetry.lock (ver su
 # cabecera) para garantizar que Docker resuelva exactamente el mismo
 # entorno que local y CI.
 ENV POETRY_VERSION=2.4.1 \
-    POETRY_VIRTUALENVS_CREATE=false \
-    PYTHONUNBUFFERED=1 \
-    # Default de Poetry (15s) corta descargas de ruedas grandes (mlflow,
-    # matplotlib, scikit-learn) con ReadTimeoutError en redes lentas.
-    POETRY_REQUESTS_TIMEOUT=600
+    # Default de Poetry (15s) corta descargas de ruedas grandes (torch,
+    # mlflow) con ReadTimeoutError en redes lentas.
+    POETRY_REQUESTS_TIMEOUT=600 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# --no-install-recommends (DS-0029): sin el, apt arrastra decenas de
-# paquetes sugeridos que no se usan -- mas peso de imagen y mas superficie
-# de CVEs que reportar en cada escaneo.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev curl && \
-    rm -rf /var/lib/apt/lists/*
+RUN python -m venv /opt/poetry \
+    && /opt/poetry/bin/pip install "poetry==${POETRY_VERSION}" \
+    && python -m venv /opt/venv
 
-RUN pip install --upgrade pip wheel "setuptools<81"
+# Con VIRTUAL_ENV activo, Poetry instala en ese venv en vez de crear uno propio.
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}"
 
-RUN pip install "poetry==$POETRY_VERSION"
+WORKDIR /build
+COPY api/pyproject.toml api/poetry.lock ./
+RUN /opt/poetry/bin/poetry install --only main --no-interaction --no-ansi
+
+# ---------------------------------------------------------------------------
+# Etapa 2 (runtime): solo el venv resuelto + el codigo. Sin Poetry, sin
+# compiladores ni curl: menos peso y menos superficie de CVEs.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:${PATH}" \
+    # api/main.py importa sus modulos hermanos como top-level (`from
+    # config_loader import load_config`), igual que en local y en los tests
+    # (pytest pythonpath = ["."] con rootdir api/).
+    PYTHONPATH=/app/api
+
+# DS-0002: no ejecutar como root. UID 10001 = el que fija el securityContext
+# de kubernetes/base/api.yaml.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
+
+COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
-
-COPY api/pyproject.toml api/poetry.lock* ./
-RUN poetry install --only main --no-interaction --no-ansi
-RUN pip install --force-reinstall "setuptools==80.9.0"
-# POETRY_VIRTUALENVS_CREATE=false hace que `poetry install` comparta site-
-# packages con la propia instalacion de Poetry (no crea un venv aislado del
-# proyecto). api/poetry.lock resuelve "packaging" en 23.2 (suficiente para
-# mlflow-skinny/matplotlib/skops), pero Poetry 2.4.1 necesita
-# el submodulo packaging.licenses (agregado en 24.2) para su propio CLI --
-# "poetry run ..." se rompe con "No module named 'packaging.licenses'" sin
-# este force-reinstall posterior al install del proyecto.
-RUN pip install --force-reinstall "packaging>=24.2"
-
-COPY api/ ./api/
+COPY --chown=appuser:appuser api/ ./api/
 # config/config.yaml es OBLIGATORIO en runtime: api/config_loader.py lo
-# resuelve como <parent-of-api>/config/config.yaml. Sin este COPY la imagen
-# arranca y muere en el import de api.main con FileNotFoundError.
-COPY config/ ./config/
+# resuelve como <parent-of-api>/config/config.yaml.
+COPY --chown=appuser:appuser config/ ./config/
 
-# api/main.py importa sus modulos hermanos como top-level (`from
-# config_loader import load_config`), igual que en local y en los tests
-# (pytest pythonpath = ["."] con rootdir api/). Sin esto, uvicorn arranca
-# desde /app y el import falla con ModuleNotFoundError.
-ENV PYTHONPATH=/app/api
-
-# DS-0002: no ejecutar como root. La aplicacion no escribe en disco (modelo
-# y scaler se descargan de MLflow a un temporal), asi que basta con que el
-# usuario pueda leer /app.
-RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser && \
-    chown -R appuser:appuser /app
 USER appuser
-
 EXPOSE 8000
 
-# DS-0026: healthcheck a nivel de imagen, para que cualquier runtime (no
-# solo docker-compose) sepa distinguir "proceso vivo" de "servicio listo".
+# DS-0026: healthcheck a nivel de imagen. Con el interprete de Python (la
+# imagen runtime no trae curl).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health || exit 1
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
 
-CMD ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

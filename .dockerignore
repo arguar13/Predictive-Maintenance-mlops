@@ -1,46 +1,21 @@
-# Git
-.git
-.gitignore
+# Lista blanca: la imagen (Dockerfile de la raiz = la API) solo necesita
+# api/ y config/. Todo lo demas queda fuera del build context.
+#
+# Antes esto era una lista negra con patrones como `.venv/` o `__pycache__/`,
+# que en .dockerignore solo aplican a la RAIZ del contexto: api/.venv (el venv
+# local, >1GB con torch) se enviaba al daemon y `COPY api/ ./api/` lo metia
+# dentro de la imagen.
+*
+!api/
+!config/
 
-# Entornos virtuales de Python
-venv/
-env/
-.venv/
-
-# Caché compilada de Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Directorios de Machine Learning y Tracking
-mlruns/
-
-# Datos crudos y DVC
-# Ignoramos la carpeta data porque DVC se encarga de descargarla
-data/
-data_toy/
-.dvc/
-.dvcignore
-
-# IaC / infra local: ninguna imagen de aplicacion los necesita en su build
-# context (evita enviarlos al daemon de Docker sin motivo)
-terraform/
-kubernetes/
-localstack/
-
-# Logs y testing
-*.log
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-**/tests/
-
-# Herramientas de calidad local (no necesarias dentro de la imagen)
-.pre-commit-config.yaml
-
-# IDEs y SO
-.vscode/
-.idea/
-.DS_Store
+# Dentro de api/: nada de entornos, caches ni tests.
+api/.venv/
+api/**/__pycache__/
+api/**/*.py[cod]
+api/.pytest_cache/
+api/.mypy_cache/
+api/.ruff_cache/
+api/.coverage
+api/htmlcov/
+api/tests/

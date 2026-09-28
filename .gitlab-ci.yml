@@ -44,8 +44,16 @@ default:
     - export AWS_SECRET_ACCESS_KEY=$(jq -r '.Credentials.SecretAccessKey' /tmp/assume-role.json)
     - export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken' /tmp/assume-role.json)
 
+# Solo la rama por defecto publica imagenes y despliega. Sin estas reglas,
+# CUALQUIER push (ramas de feature incluidas) subia una imagen a ECR y
+# aplicaba el overlay contra EKS: coste real de AWS y un cluster que cambia
+# con codigo que nadie ha revisado.
+.default_branch_only: &default_branch_only
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 # ---------------------------------------------------------------------------
-# 1. lint_test: ruff + pytest en api/ y core_ml/
+# 1. lint_test: formato + ruff + pytest en api/ y core_ml/ (= `make ci`)
 # ---------------------------------------------------------------------------
 lint_test:
   stage: lint_test
@@ -53,8 +61,7 @@ lint_test:
     - apt-get update && apt-get install -y --no-install-recommends make git
     - pip install "poetry==${POETRY_VERSION}"
     - make install
-    - make lint
-    - make test
+    - make ci
 
 # ---------------------------------------------------------------------------
 # 2. build_push: build + push de la imagen de la API a ECR
@@ -62,10 +69,10 @@ lint_test:
 build_push:
   stage: build_push
   needs: ["lint_test"]
+  <<: [*default_branch_only, *aws_auth]
   image: docker:24.0.5
   services:
     - docker:24.0.5-dind
-  <<: *aws_auth
   script:
     - apk add --no-cache make
     - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
@@ -84,6 +91,10 @@ deploy:
   stage: deploy
   needs: ["build_push"]
   image: alpine:3.20
+  # Manual: publicar la imagen no implica cambiar lo que sirve el cluster.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
   <<: *aws_auth
   script:
     - apk add --no-cache make curl bash

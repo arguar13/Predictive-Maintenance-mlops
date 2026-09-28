@@ -4,13 +4,14 @@
 #
 # Uso:
 #   docker compose up -d          # levanta todo el stack
-#   make train-toy                # (fuera de compose) entrena y registra un
-#                                  # modelo "champion" contra este MLflow local
-#   docker compose restart api    # la API vuelve a cargar el modelo recien registrado
+#   export MLFLOW_TRACKING_URI=http://localhost:5001
+#   make train-toy                # (fuera de compose) entrena y, si pasa el
+#                                  # quality gate, registra el "champion"
 #
-# La API arranca sin modelo (healthcheck en rojo) hasta que exista un modelo
-# con el alias "champion" en el Model Registry de este MLflow local -- es
-# el comportamiento esperado, no un fallo del stack.
+# La API arranca sin modelo (healthcheck en rojo) y reintenta cargarlo cada
+# 30s: en cuanto exista un "champion" en este MLflow pasa a verde sola. Para
+# servir un champion NUEVO (reentrenamiento) si hay que reiniciarla:
+#   docker compose restart api
 
 services:
   postgres:
@@ -125,7 +126,14 @@ services:
       mlflow:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # La imagen runtime no trae curl (ver Dockerfile): se usa Python.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
