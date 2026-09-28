@@ -63,7 +63,7 @@ graph TD
 - **La inferencia es sincrónica, bajo demanda.** Un cliente envía una ventana de lecturas a `/predict` y recibe una clasificación en la misma petición — no hay ningún broker de mensajes ni capa de streaming en el camino, porque nada en este sistema necesita reaccionar a un flujo continuo más rápido de lo que permite un ciclo request/response.
 - **Las features se calculan una sola vez, offline.** `prepare_training_data.py` transforma la telemetría cruda en la forma de tensor exacta que consume el modelo, y `train.py` lee ese parquet directamente. Como las predicciones se sirven a partir de una ventana que provee quien llama, y no de valores de feature en vivo constantemente actualizados, no hace falta un store online aparte que mantener sincronizado.
 - **El despliegue es un único paso auditable.** El stage `deploy` de CI se autentica contra AWS vía OIDC y corre `kubectl apply -k` contra el overlay ya renderizado. Desde un commit mergeado hasta un pod corriendo hay exactamente un sistema involucrado, lo que hace fácil de trazar el camino cuando algo necesita depurarse.
-- **Los secretos son Secrets nativos de Kubernetes.** Las credenciales de RDS, la URI de MLflow y la API key llegan a los pods vía `envFrom: secretRef` (`kubernetes/base/secret.yaml`), lo que mantiene la distribución de credenciales declarativa y definida junto al resto de los manifiestos que describen los workloads.
+- **Los secretos son Secrets nativos de Kubernetes.** Las credenciales de RDS, la URI de MLflow y la API key llegan a los pods vía `envFrom: secretRef` El Secret se crea una vez por cluster con `kubectl create secret` y deliberadamente **no** forma parte de los recursos de Kustomize (`kubernetes/base/secret.yaml` es solo una plantilla de las claves esperadas), así `kubectl apply -k` nunca puede sobrescribir credenciales reales con placeholders.
 - **El acceso a S3 viaja sobre el rol IAM del node group.** Todos los pods del cluster heredan la misma política de lectura/escritura acotada para los buckets de DVC y de MLflow, así que hay una sola política que razonar en vez de una por servicio.
 
 ## Stack tecnológico
@@ -86,6 +86,18 @@ graph TD
 **El modelo.** `ConvTransformer` (`core_ml/src/train.py`) pasa una capa `Conv1d` sobre la ventana de 30 timesteps para extraer patrones locales de sensores, agrega codificación posicional sinusoidal, y alimenta un `TransformerEncoder` de 2 capas que modela dependencias de largo alcance. La convolución captura tendencias cortas entre sensores correlacionados con pocos parámetros, y la atención relaciona cualquier par de timesteps de la ventana sin el cuello de botella secuencial de una RNN. Es deliberadamente pequeño (`d_model=64`, 2 capas) para que el dataset completo entrene en CPU.
 
 **Quality gate.** Los motores se reparten en tres grupos, nunca fila a fila (las ventanas se solapan y un split IID filtraría casi-duplicados): **train** (60%) ajusta los pesos, **val** (20%) elige el mejor checkpoint y decide el early stopping, y **test** (20%) se usa una sola vez, sobre el checkpoint restaurado, para decidir el gate. Evaluar el gate sobre val sería optimista, porque val ya eligió el epoch. La promoción al alias `champion` exige superar **dos** umbrales en `config/config.yaml`: `f2_weighted_threshold` **y** `critical_recall_threshold` (un piso duro sobre el recall de la clase Critical, para que un modelo no compense fallar justo ahí con buen desempeño en las otras clases). Pasar el gate no alcanza para reemplazar al champion: si el champion actual se evaluó sobre exactamente los mismos datos y el mismo split (misma tag `training_data_fingerprint`), el retador además tiene que igualar o superar su F2. Solo los runs promovidos obtienen una versión en el Model Registry; los rechazados quedan como runs de MLflow, auditables pero nunca servibles. Cada run registra además las métricas que exponen las debilidades en vez de ocultarlas: F1 macro, precisión/recall/F1 por clase, una línea base de clase mayoritaria y la matriz de confusión de test (`evaluation/test_report.json`).
+
+**Resultados.** Dataset completo (709 motores), evaluado una sola vez sobre 142 motores de test (27,212 ventanas) que nunca se usaron para entrenar ni para elegir el modelo:
+
+| Métrica | Modelo | Línea base "siempre Healthy" |
+| --- | --- | --- |
+| Accuracy | 0.894 | 0.682 |
+| F2 ponderado (gate ≥ 0.75) | 0.893 | 0.623 |
+| Recall de Critical (gate ≥ 0.75) | 0.884 | 0.000 |
+| F1 macro | 0.831 | 0.270 |
+| Recall de Alert (clase más débil) | 0.626 | 0.000 |
+
+El modelo supera ambos umbrales del gate; la banda Alert (31–60 ciclos restantes) concentra la mayoría de los errores, por eso el F1 macro se reporta junto a las métricas ponderadas.
 
 **Dataset toy.** `core_ml/data_toy/` (~1000 filas, versionado con DVC, o regenerado en local con `make build-toy-dataset`) permite correr todo el pipeline en segundos, sin GPU — es lo que corre `make smoke-test`. CI no necesita DVC: `core_ml/tests/test_pipeline_e2e.py` ejecuta prepare → train → MLflow → Registry de punta a punta sobre un dataset sintético con el formato exacto de C-MAPSS.
 
@@ -117,7 +129,7 @@ graph TD
 │   └── tests/                    # Tests unitarios
 ├── config/config.yaml       # Configuración global (validada por Pydantic)
 ├── kubernetes/
-│   ├── base/                # Namespace, ServiceAccount, Secret, ConfigMap,
+│   ├── base/                # Namespace, ServiceAccount, ConfigMap, plantilla de Secret,
 │   │                          #   Deployments de api/mlflow, HPA
 │   └── overlays/production/ # Tag de imagen (kustomize edit set image)
 ├── terraform/                # VPC, EKS, RDS, S3, ECR, IAM (OIDC de CI)
@@ -235,7 +247,9 @@ cd terraform/bootstrap && terraform init && terraform apply
 cd terraform && terraform init -migrate-state && terraform apply
 aws eks update-kubeconfig --name predictive-maintenance-mlops --region us-east-1
 
-# 3. Completar el Secret de Kubernetes con las credenciales reales
+# 3. Crear el namespace y el Secret de Kubernetes con las credenciales reales
+#    (el Secret no forma parte de los recursos de Kustomize, así los despliegues nunca lo pisan)
+kubectl create namespace mlops-env --dry-run=client -o yaml | kubectl apply -f -
 #    (terraform output -raw db_password / db_username; ver kubernetes/base/secret.yaml)
 kubectl create secret generic mlops-secrets -n mlops-env \
   --from-literal=POSTGRES_USER=<...> --from-literal=POSTGRES_PASSWORD=<...> \

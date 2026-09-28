@@ -29,10 +29,10 @@ from logging_config import configure_logging
 log = configure_logging("prepare-training-data")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-# 0 = todos los motores (709, ~140k ventanas, ~400MB en float32): con el
-# gate evaluado sobre motores de test no vistos, una muestra de 100 motores
-# no alcanzaba el piso de recall de Critical (0.70 < 0.75) y el dataset
-# completo si (0.90). `--max-engines N` sirve para iteraciones rapidas.
+# 0 = todos los motores (709, ~140k ventanas, ~400MB en float32). Con el
+# gate decidido sobre motores de test no vistos, una muestra de 100 motores
+# (60 de train) no alcanzaba el piso de recall de Critical; el dataset
+# completo si. `--max-engines N` sirve para iteraciones rapidas.
 DEFAULT_MAX_ENGINES = 0
 
 
@@ -99,7 +99,7 @@ def generate_training_parquet(
                 # engine_id fabricado por índice (i % N) no se corresponde con
                 # qué motor generó la ventana, y es exactamente el id que
                 # train.py necesita para agrupar por motor al hacer el split
-                # train/val (ver create_sliding_windows).
+                # train/val/test (ver train._split_train_val_test).
                 "engine_id": str(groups[i]),
                 "event_timestamp": base_time + timedelta(seconds=i * 10),
                 "created_timestamp": _utc_now_naive(),

@@ -10,11 +10,14 @@
 # `poetry install` aborta con "[WinError 206] nombre de archivo demasiado
 # largo. Cannot install torch."
 #
-# ./.venv recorta ~45 caracteres y cabe. Alternativa a nivel de SO (requiere
-# privilegios de administrador, por eso no se asume aqui):
+# ./.venv recorta ~45 caracteres, lo que alcanza si la ruta del proyecto es
+# corta. Con una ruta de proyecto larga ni siquiera el .venv interno cabe:
+# en ese caso, crear el venv en una ruta corta (p.ej. C:\v611\core) y dejar
+# en <paquete>/.venv un junction hacia el (`mklink /J`). Alternativa a nivel
+# de SO (requiere privilegios de administrador, por eso no se asume aqui):
 #   HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled = 1
 #
-# En Docker y CI no cambia nada: ambos Dockerfile fijan
-# POETRY_VIRTUALENVS_CREATE=false y instalan en el interprete del sistema.
+# En Docker y CI no aplica: el Dockerfile (multi-stage) instala con un venv
+# propio ya activo (/opt/venv) y los runners de CI son Linux, sin MAX_PATH.
 [virtualenvs]
 in-project = true

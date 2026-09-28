@@ -31,7 +31,7 @@ mlflow = "^3.15.1"
 # Rueda CPU-only (ver [[tool.poetry.source]] "pytorch-cpu" mas abajo): la API
 # solo hace inferencia (nunca entrena), sin llamadas a CUDA. La rueda de PyPI
 # arrastraba ~2GB de paquetes nvidia-* nunca usados -- ese peso fue la causa
-# real de que el job build_image de .gitlab-ci.yml se quedara sin ancho de
+# real de que el job build_push de .gitlab-ci.yml se quedara sin ancho de
 # banda de subida y excediera el timeout de 1h del job.
 torch = { version = "^2.13.0", source = "pytorch-cpu" }
 # numpy: antes "<2.0.0", incompatible con el ">=2.0.0" de core_ml. Dos
@@ -46,7 +46,7 @@ pydantic = "^2.9.0"
 joblib = "^1.4.2"
 pyyaml = "^6.0.1"
 # El scaler registrado por core_ml/src/train.py es un sklearn StandardScaler
-# deserializado aquí vía joblib.load: sin esta dependencia, _load_champion_model_and_scaler
+# deserializado aquí vía joblib.load: sin esta dependencia, load_champion
 # falla con ModuleNotFoundError en cuanto se descarga un scaler real desde MLflow.
 scikit-learn = ">=1.4.0"
 structlog = "^26.1.0" # logging JSON estructurado (CloudWatch/Elasticsearch)

@@ -114,8 +114,9 @@ def validate_labeled_telemetry(df: pd.DataFrame) -> pd.DataFrame:
 def validate_windowed_features(df: pd.DataFrame, expected_length: int) -> pd.DataFrame:
     """Falla rápido si las ventanas aplanadas no tienen el contrato esperado.
 
-    `expected_length` es `window_size * num_features` (ver config.yaml);
-    se valida por separado porque depende de configuración, no es estático.
+    `expected_length` es `window_size * num_features`: window_size sale de
+    config.yaml y num_features de los datos (sensores que sobreviven a
+    clean_and_prepare), así que se valida por separado, no es estático.
     """
     validated = WINDOWED_FEATURE_SCHEMA.validate(df, lazy=True)
 

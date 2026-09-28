@@ -63,7 +63,7 @@ graph TD
 - **Inference is synchronous, on demand.** A client sends one window of readings to `/predict` and gets a classification back in the same request — there's no message broker or streaming layer in the path, because nothing in this system needs to react to a continuous feed faster than a request/response cycle allows.
 - **Features are computed once, offline.** `prepare_training_data.py` turns raw telemetry into the exact tensor shape the model consumes, and `train.py` reads that parquet directly. Since predictions are served from a window the caller supplies rather than from live, constantly-refreshed feature values, there's no separate online store to keep in sync.
 - **Deployment is a single, auditable step.** The `deploy` stage in CI authenticates to AWS via OIDC and runs `kubectl apply -k` against the rendered overlay. From a merged commit to a running pod there is exactly one system involved, which keeps the path easy to trace when something needs debugging.
-- **Secrets are plain Kubernetes Secrets.** RDS credentials, the MLflow URI and the API key are delivered to pods through `envFrom: secretRef` (`kubernetes/base/secret.yaml`), which keeps credential distribution declarative and defined right alongside the workloads that consume it.
+- **Secrets are plain Kubernetes Secrets.** RDS credentials, the MLflow URI and the API key are delivered to pods through `envFrom: secretRef` The Secret is created once per cluster with `kubectl create secret` and is deliberately **not** part of the Kustomize resources (`kubernetes/base/secret.yaml` is only a template of the expected keys), so `kubectl apply -k` can never overwrite real credentials with placeholders.
 - **S3 access rides on the node group's IAM role.** Every pod in the cluster inherits the same scoped read/write policy for the DVC and MLflow buckets, so there's one policy to reason about instead of one per service.
 
 ## Tech stack
@@ -86,6 +86,18 @@ graph TD
 **The model.** `ConvTransformer` (`core_ml/src/train.py`) runs a `Conv1d` layer over the 30-timestep window to extract local sensor patterns, adds sinusoidal positional encoding, and feeds a 2-layer `TransformerEncoder` that models long-range dependencies. The convolution captures short trends across correlated sensors with few parameters, and attention relates any two timesteps of the window without an RNN's sequential bottleneck. It is deliberately small (`d_model=64`, 2 layers) so the full dataset trains on a CPU.
 
 **Quality gate.** Engines are split three ways, never row by row (sliding windows overlap heavily, and an IID split would leak near-duplicates): **train** (60%) fits the weights, **val** (20%) picks the best checkpoint and drives early stopping, and **test** (20%) is used only once, on the restored checkpoint, to decide the gate. Gating on val would be optimistic, since val already chose the epoch. Promotion to the `champion` alias requires beating **two** thresholds in `config/config.yaml`: `f2_weighted_threshold` **and** `critical_recall_threshold` (a hard floor on the Critical class recall specifically, so a model can't compensate for failing on the class that matters most with good performance on the other two). Passing the gate isn't enough to replace a champion: if the current champion was evaluated on the exact same data and split (same `training_data_fingerprint` tag), the challenger also has to match or beat its F2. Only runs that are promoted get a version in the Model Registry; rejected runs stay as plain MLflow runs, auditable but never servable. Every run also logs the metrics that expose weaknesses rather than hide them: macro F1, per-class precision/recall/F1, a majority-class baseline, and the test confusion matrix (`evaluation/test_report.json`).
+
+**Results.** Full dataset (709 engines), evaluated once on 142 held-out test engines (27,212 windows) never used for training or model selection:
+
+| Metric | Model | Always-Healthy baseline |
+| --- | --- | --- |
+| Accuracy | 0.894 | 0.682 |
+| Weighted F2 (gate ≥ 0.75) | 0.893 | 0.623 |
+| Critical recall (gate ≥ 0.75) | 0.884 | 0.000 |
+| Macro F1 | 0.831 | 0.270 |
+| Alert recall (weakest class) | 0.626 | 0.000 |
+
+The model clears both gate thresholds; the Alert band (31–60 cycles left) is where most errors live, which is why macro F1 is reported next to the weighted scores.
 
 **Toy dataset.** `core_ml/data_toy/` (~1000 rows, versioned with DVC, or rebuilt locally with `make build-toy-dataset`) lets the whole pipeline run in seconds, without a GPU — this is what `make smoke-test` runs. CI doesn't need DVC at all: `core_ml/tests/test_pipeline_e2e.py` runs prepare → train → MLflow → Registry end to end on a synthetic dataset with the exact C-MAPSS format.
 
@@ -117,7 +129,7 @@ graph TD
 │   └── tests/                    # Unit tests
 ├── config/config.yaml       # Global config (validated with Pydantic)
 ├── kubernetes/
-│   ├── base/                # Namespace, ServiceAccount, Secret, ConfigMap,
+│   ├── base/                # Namespace, ServiceAccount, ConfigMap, Secret template,
 │   │                          #   api/mlflow Deployments, HPA
 │   └── overlays/production/ # Image tag (kustomize edit set image)
 ├── terraform/                # VPC, EKS, RDS, S3, ECR, IAM (CI OIDC)
@@ -235,7 +247,9 @@ cd terraform/bootstrap && terraform init && terraform apply
 cd terraform && terraform init -migrate-state && terraform apply
 aws eks update-kubeconfig --name predictive-maintenance-mlops --region us-east-1
 
-# 3. Fill in the Kubernetes Secret with real credentials
+# 3. Create the namespace and the Kubernetes Secret with real credentials
+#    (the Secret is not part of the Kustomize resources, so deploys never overwrite it)
+kubectl create namespace mlops-env --dry-run=client -o yaml | kubectl apply -f -
 #    (terraform output -raw db_password / db_username; see kubernetes/base/secret.yaml)
 kubectl create secret generic mlops-secrets -n mlops-env \
   --from-literal=POSTGRES_USER=<...> --from-literal=POSTGRES_PASSWORD=<...> \

@@ -53,7 +53,7 @@ spec:
           env:
             # Con la raiz de solo lectura, MLflow necesita un HOME escribible
             # para su cache y para descargar el scaler del run (ver
-            # _load_champion_model_and_scaler en api/main.py).
+            # load_champion en api/main.py).
             - name: HOME
               value: /tmp
           volumeMounts:

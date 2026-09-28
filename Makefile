@@ -117,10 +117,10 @@ dvc-push: ## Sube datasets versionados (data/, data_toy/) al remoto S3 de DVC
 	poetry -C $(CORE) run dvc push
 
 dvc-use-localstack: ## Redirige el remoto S3 de DVC a LocalStack (solo esta maquina; ver .dvc/config.local)
-	poetry -C $(CORE) run dvc remote modify --local s3remote endpointurl http://localhost:4566
+	poetry -C $(CORE) run dvc remote modify --local s3remote endpointurl http://localhost:4567
 	poetry -C $(CORE) run dvc remote modify --local s3remote access_key_id test
 	poetry -C $(CORE) run dvc remote modify --local s3remote secret_access_key test
-	@echo "OK: core_ml/.dvc/config.local apunta 's3remote' a LocalStack (http://localhost:4566)."
+	@echo "OK: core_ml/.dvc/config.local apunta 's3remote' a LocalStack (http://localhost:4567, puerto publicado por docker-compose)."
 	@echo "    core_ml/.dvc/config (compartido en git) sigue apuntando al S3 real; sin cambios."
 
 ## ---------------------------------------------------------------------
@@ -146,7 +146,7 @@ compose-ps: ## Muestra el estado/healthcheck de cada servicio del stack local
 	docker compose ps
 
 localstack-env: ## Imprime las variables para apuntar un shell local a LocalStack
-	@echo "export AWS_ENDPOINT_URL=http://localhost:4566"
+	@echo "export AWS_ENDPOINT_URL=http://localhost:4567"
 	@echo "export AWS_ACCESS_KEY_ID=test"
 	@echo "export AWS_SECRET_ACCESS_KEY=test"
 	@echo "export AWS_DEFAULT_REGION=us-east-1"

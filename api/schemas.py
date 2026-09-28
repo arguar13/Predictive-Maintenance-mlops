@@ -5,10 +5,10 @@ rectangular, valores no finitos, engine_id vacío) es rechazada por FastAPI
 con un 422 antes de tocar el scaler o el modelo.
 
 La forma EXACTA (window_size x num_features) no se valida aquí sino en el
-endpoint, contra el modelo que está cargado en ese momento: el modelo
-"champion" puede cambiar (o cargarse después de arrancar) sin reiniciar la
-API, y un esquema construido una sola vez al importar el módulo quedaría
-fijado a una forma obsoleta.
+endpoint, contra el modelo que está cargado en ese momento: el champion puede
+cargarse después de arrancar (ModelService reintenta hasta que exista), así
+que un esquema construido una sola vez al importar el módulo quedaría fijado
+a una forma que todavía no se conoce.
 """
 
 from __future__ import annotations

@@ -515,7 +515,7 @@ def train_pipeline(
     # y el orden de batches del DataLoader (shuffle=True) son no-deterministas
     # -- el mismo commit + mismos datos + mismos hiperparametros podia pasar
     # el quality gate en una corrida del pipeline y fallar en la siguiente.
-    # Misma semilla que _split_by_engine mas abajo.
+    # Misma semilla que _split_train_val_test mas abajo.
     torch.manual_seed(seed)
     config = load_config()
     window_size = config["model"]["window_size"]
@@ -723,14 +723,15 @@ def train_pipeline(
                         "early_stopping",
                         epoch=epoch + 1,
                         patience=patience,
-                        best_f2_weighted=best_f2_weighted,
+                        best_f2_seen=best_f2_seen,
+                        restored_checkpoint_f2=best_f2_weighted,
                     )
                     break
 
-        # best_state_dict siempre queda seteado (epoch 0 ya actualiza el
-        # maximo desde -1.0 si epochs >= 1); restaurarlo deja el modelo que
-        # efectivamente se registra/evalua en el estado de su mejor epoch,
-        # no del ultimo. Un RuntimeError explicito (no assert: se elimina en
+        # best_state_dict siempre queda seteado si epochs >= 1 (best_score
+        # arranca en None, asi que el primer epoch lo fija); restaurarlo deja
+        # el modelo que efectivamente se registra/evalua en el estado de su
+        # mejor epoch, no del ultimo. Un RuntimeError explicito (no assert: se elimina en
         # bytecode optimizado) documenta que epochs=0 nunca es un uso valido.
         if best_state_dict is None:
             raise RuntimeError(
